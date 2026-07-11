@@ -42,6 +42,8 @@ def is_managed_wrapper(wrapper: object, expected: str, project_root: Path) -> bo
         return False
     expected_text = normalized(expected)
     hook_text = normalized(project_root / ".codex" / "hooks" / "speak.py")
+    hook_suffix = "/.codex/hooks/speak.py"
+    voice_suffix = "/.codex-voice/.venv/"
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -53,7 +55,8 @@ def is_managed_wrapper(wrapper: object, expected: str, project_root: Path) -> bo
             if command_text == expected_text:
                 return True
             if (
-                hook_text in command_text
+                (hook_text in command_text or hook_suffix in command_text)
+                and voice_suffix in command_text
                 and entry.get("statusMessage") == MANAGED_STATUS
             ):
                 return True
