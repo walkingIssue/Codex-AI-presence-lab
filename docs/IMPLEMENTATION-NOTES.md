@@ -158,6 +158,26 @@ The Orb theme work should eventually allow users to customize the state-to-
 color mapping, intensity, pulse speed, and transition style without changing
 the host adapter or Kokoro worker.
 
+## Representation direction
+
+The strongest direction is presence without a literal face. Preserve the
+current ring/strand/portal silhouette and give each layer a restrained job:
+
+- inner aperture: attention, listening, and thinking;
+- ring and strands: speech cadence and semantic activity;
+- halo/afterglow: continuity between state transitions.
+
+The renderer should derive speech motion from at least two signals: a smoothed
+amplitude envelope and a cadence/onset signal such as spectral flux or short-
+time energy changes. Volume alone makes every sentence look the same. A slow,
+seeded asymmetry field can break perfect radial symmetry without introducing
+random frame-to-frame noise.
+
+Idle breathing, listening/thinking pulses, and post-speech afterglow should be
+low-energy defaults. They should yield to speech and activity states rather
+than compete with them. This keeps the representation expressive while
+preserving the non-avatar quality that makes the Orb feel like a presence.
+
 ## First implementation slices
 
 1. Add movable-window state and an explicit move mode on Windows.

@@ -17,6 +17,7 @@ This is intentionally kept outside the distributable skill. The detailed backlog
 - Optional [per-session configuration profiles](WISHLIST.md#per-session-configuration-profiles) without changing the project default.
 - Movable, persistently positioned companion window with an explicit move mode.
 - Semantic Orb states for thinking, tool activity, skill execution, and local CLI work.
+- Orb representation refinements: idle breathing, bounded asymmetry, inner attention pulse, and cadence-aware speech motion.
 - Linux CPU support, followed by optional CUDA and desktop-environment validation.
 - A host-neutral presence event bridge with Codex and generic adapters.
 - A documented visual-theme format for custom Orb geometry and palettes.

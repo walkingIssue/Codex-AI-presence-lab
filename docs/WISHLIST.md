@@ -66,6 +66,29 @@ Acceptance target: two simultaneous sessions in one project can use different vo
 - Support nested or rapidly alternating activity without making transitions
   visually noisy.
 
+## Orb representation refinements
+
+Feedback to preserve:
+
+- Add a faint, slow breathing motion during idle.
+- Introduce slight asymmetry so the Orb feels less like a perfect visualizer.
+- Give listening and thinking a dim inner pulse.
+- Make speech ripples respond to cadence and phrasing, not only raw volume.
+
+Additional design direction:
+
+- Use the inner aperture as an attention signal: subtly contract or focus it
+  while listening/thinking without turning it into an eye or face.
+- Let the outer strands carry speech and activity while the inner geometry
+  carries attention, creating layered meaning without adding icons or text.
+- Add a restrained post-speech afterglow that decays naturally instead of
+  cutting the presence off at the exact end of audio.
+- Generate asymmetry from slow, bounded phase drift or seeded noise so it feels
+  alive but never becomes visual jitter.
+- Prefer one strong motion idea per state; avoid stacking every effect at once.
+- Keep all of these parameters theme-configurable: breathing rate, asymmetry,
+  inner pulse, cadence sensitivity, afterglow, and transition softness.
+
 ## Companion window and placement
 
 - Make the Strand Orb movable from the desktop instead of fixing it to the lower-right corner.
