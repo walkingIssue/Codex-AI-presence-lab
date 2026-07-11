@@ -93,6 +93,71 @@ generic adapter accepts JSONL over stdin or a localhost IPC endpoint. The
 core worker should not need to know whether the event came from Codex, Warp,
 or another development environment.
 
+## Proposed activity-state layer
+
+The current renderer consumes `state` events for speaking/not-speaking and
+`audio` events for amplitude and frequency bands. That is enough for playback
+animation, but it cannot distinguish why the assistant is currently busy.
+
+Add a separate, deliberately coarse activity event:
+
+```json
+{
+  "type": "activity",
+  "state": "tool",
+  "source": "host-adapter",
+  "session_id": "session-id",
+  "sequence": 13,
+  "timestamp": "2026-07-11T19:00:01Z"
+}
+```
+
+The initial state vocabulary could be:
+
+| State | Meaning | Suggested visual direction |
+| --- | --- | --- |
+| `idle` | No active response | Calm baseline cyan |
+| `thinking` | Model is processing | Slow violet/indigo breathing |
+| `tool` | Host reports external tool activity | Amber/gold accents |
+| `skill` | A named skill/integration is active | Magenta or deep violet accents |
+| `cli` | Local command execution is active | Green/teal accents |
+| `speaking` | Audio is being played | Current amplitude deformation |
+| `waiting` | Waiting for user or host input | Dim, steady halo |
+| `error` | Non-sensitive failure state | Short red pulse, then baseline |
+
+These are categories, not transcripts. The host adapter should emit them from
+explicit lifecycle records and never forward the underlying tool name,
+command, arguments, paths, or hidden reasoning to the renderer.
+
+The intended flow is:
+
+```mermaid
+stateDiagram-v2
+  [*] --> idle
+  idle --> thinking
+  thinking --> tool
+  thinking --> skill
+  thinking --> cli
+  tool --> thinking
+  skill --> thinking
+  cli --> thinking
+  thinking --> speaking
+  speaking --> idle
+  tool --> error
+  skill --> error
+  cli --> error
+  error --> idle
+```
+
+Implementation should keep activity state separate from audio amplitude. A
+tool call can remain visually active while no audio is playing, and speech can
+resume after the tool state without resetting the renderer's geometry abruptly.
+Each state needs a heartbeat/expiry path and a safe fallback to `idle`.
+
+The Orb theme work should eventually allow users to customize the state-to-
+color mapping, intensity, pulse speed, and transition style without changing
+the host adapter or Kokoro worker.
+
 ## First implementation slices
 
 1. Add movable-window state and an explicit move mode on Windows.
@@ -113,4 +178,5 @@ or another development environment.
 - Codex session/project isolation remains intact.
 - A generic adapter can drive one visible response and one progress event
   without exposing hidden reasoning or raw tool output.
-
+- Activity transitions render the category only, expire safely, and remain
+  independent of audio playback timing.

@@ -50,6 +50,22 @@ Acceptance target: two simultaneous sessions in one project can use different vo
 - Make audio-reactive deformation configurable without coupling it to the voice implementation.
 - Add short, focused showcase clips for installation, voice changes, configuration, and Orb playback.
 
+## Activity visualization states
+
+- Add a coarse visual state for model thinking or inference.
+- Distinguish tool activity, skill execution, and local CLI work with separate
+  colors or geometric signatures.
+- Keep speaking as its own audio-reactive state, with idle and waiting states
+  remaining visually calm rather than disappearing.
+- Make the state palette part of the future visual-theme format instead of
+  hard-coding one set of colors.
+- Show only the category of activity; do not expose tool names, commands, file
+  paths, arguments, hidden reasoning, or raw tool output.
+- Add heartbeat and timeout handling so a crashed adapter cannot leave the Orb
+  permanently stuck in a busy state.
+- Support nested or rapidly alternating activity without making transitions
+  visually noisy.
+
 ## Companion window and placement
 
 - Make the Strand Orb movable from the desktop instead of fixing it to the lower-right corner.
