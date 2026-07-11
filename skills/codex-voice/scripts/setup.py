@@ -29,6 +29,7 @@ VOICE_GITIGNORE = """.venv/
 *.log
 *.pid
 orb/node_modules/
+orb-position.json
 orb.enabled
 volume
 commentary-volume

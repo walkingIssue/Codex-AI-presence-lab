@@ -120,6 +120,12 @@ python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" orb-off
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" status
 ```
 
+When the Orb is running, hold `Ctrl+Alt` on Windows/Linux or `Cmd+Alt` on
+macOS, then press and drag with the left mouse button. The window captures the
+pointer only for that deliberate gesture and returns to click-through mode
+when the drag ends. The position is saved per project; press `Escape` to
+cancel a move in progress.
+
 Report the resulting state briefly. The skill controls future responses; it
 does not speak the current response directly.
 

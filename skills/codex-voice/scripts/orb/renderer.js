@@ -1,4 +1,5 @@
 const canvas = document.getElementById("orb");
+const moveHint = document.getElementById("move-hint");
 const gl = canvas.getContext("webgl2", {
   alpha: true,
   antialias: true,
@@ -166,6 +167,74 @@ let speaking = 0;
 let targetSpeaking = 0;
 const targetBands = new Float32Array(16);
 const bands = new Float32Array(16);
+let moveMode = false;
+let dragging = false;
+
+function moveModifierHeld(event) {
+  return Boolean(event.altKey && (event.ctrlKey || event.metaKey));
+}
+
+function setMoveMode(enabled) {
+  moveMode = Boolean(enabled);
+  dragging = false;
+  document.body.classList.toggle("move-mode", moveMode);
+  document.body.classList.remove("dragging");
+  moveHint.hidden = !moveMode;
+}
+
+window.orbApi.onMoveMode(setMoveMode);
+
+// Electron forwards mouse movement while the transparent window is
+// click-through. Use that safe signal to arm the window before the deliberate
+// Ctrl/Cmd+Alt+left-button gesture arrives.
+window.addEventListener("mousemove", (event) => {
+  const wantsMove = moveModifierHeld(event);
+  if (!moveMode && !dragging && wantsMove) {
+    window.orbApi.setMoveMode(true);
+  } else if (moveMode && !dragging && !wantsMove) {
+    window.orbApi.setMoveMode(false);
+  }
+});
+
+canvas.addEventListener("pointerdown", (event) => {
+  if (!moveMode || event.button !== 0 || !moveModifierHeld(event)) {
+    return;
+  }
+  dragging = true;
+  document.body.classList.add("dragging");
+  canvas.setPointerCapture(event.pointerId);
+  window.orbApi.dragStart({ screenX: event.screenX, screenY: event.screenY });
+  event.preventDefault();
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!moveMode || !dragging) {
+    return;
+  }
+  window.orbApi.drag({ screenX: event.screenX, screenY: event.screenY });
+  event.preventDefault();
+});
+
+function finishDrag(event) {
+  if (!dragging) {
+    return;
+  }
+  dragging = false;
+  document.body.classList.remove("dragging");
+  if (event && canvas.hasPointerCapture(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+  window.orbApi.dragEnd();
+  window.orbApi.setMoveMode(false);
+}
+
+canvas.addEventListener("pointerup", finishDrag);
+canvas.addEventListener("pointercancel", finishDrag);
+window.addEventListener("keydown", (event) => {
+  if (moveMode && event.key === "Escape") {
+    window.orbApi.setMoveMode(false);
+  }
+});
 
 window.orbApi.onAudioEvent((event) => {
   if (event.type === "state") {

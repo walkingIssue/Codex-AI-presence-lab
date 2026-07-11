@@ -30,8 +30,9 @@ supported.
 1. Keep normal mode click-through.
 2. Add a project-local `orb-position.json` containing `x`, `y`, display/work
    area metadata, and a schema version.
-3. Add a move-mode control that temporarily disables mouse ignoring and
-   enables pointer events in the renderer.
+3. Detect the deliberate `Ctrl/Cmd+Alt` plus left-button gesture from forwarded
+   mouse movement, then temporarily disable mouse ignoring and enable pointer
+   events in the renderer.
 4. Let the renderer send drag start, delta, and drag end messages to the
    Electron main process.
 5. Clamp the final position to the active display work area, persist it, and
