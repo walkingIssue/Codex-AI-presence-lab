@@ -1,0 +1,84 @@
+name: Promote validated skill
+
+on:
+  workflow_dispatch:
+    inputs:
+      target-branch:
+        description: Branch in the clean release repository to update
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Required E2E gate
+    uses: ./.github/workflows/e2e.yml
+    with:
+      source-repository: walkingIssue/Codex-AI-presence-lab
+      source-ref: ${{ github.sha }}
+
+  promote:
+    name: Project into the clean release repository
+    needs: e2e
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_REPO_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+      TARGET_BRANCH: ${{ inputs.target-branch }}
+    steps:
+      - name: Check out the validated lab revision
+        uses: actions/checkout@v4
+        with:
+          path: lab
+
+      - name: Check out the clean release repository
+        uses: actions/checkout@v4
+        with:
+          repository: walkingIssue/Codex-AI-presence
+          ref: ${{ inputs.target-branch }}
+          token: ${{ secrets.RELEASE_REPO_TOKEN }}
+          path: release
+
+      - name: Require the promotion credential
+        shell: bash
+        run: |
+          if [ -z "$RELEASE_REPO_TOKEN" ]; then
+            echo "RELEASE_REPO_TOKEN is not configured on the lab repository."
+            echo "Create a fine-grained token with Contents: Read and write on walkingIssue/Codex-AI-presence, then add it as the lab repository secret."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Project the validated skill
+        shell: bash
+        working-directory: lab
+        run: python tools/project_release.py --source . --output dist
+
+      - name: Replace only the installable skill
+        shell: bash
+        run: |
+          rm -rf release/skills/codex-voice
+          mkdir -p release/skills
+          cp -R lab/dist/skills/codex-voice release/skills/codex-voice
+
+      - name: Commit and push the promotion
+        shell: bash
+        run: |
+          git -C release config user.name "github-actions[bot]"
+          git -C release config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C release add skills/codex-voice
+          if git -C release diff --cached --quiet; then
+            echo "The release repository already matches the validated skill."
+            exit 0
+          fi
+          git -C release commit -m "Promote validated skill from lab"
+          git -C release push origin "HEAD:${TARGET_BRANCH}"
+

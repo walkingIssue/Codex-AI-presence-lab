@@ -1,0 +1,6 @@
+kokoro-onnx==0.5.0
+numpy==2.5.1
+soundfile==0.14.0
+phonemizer-fork==3.3.2
+espeakng-loader==0.2.4
+onnxruntime-gpu[cuda,cudnn]>=1.20

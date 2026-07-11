@@ -1,0 +1,13 @@
+{
+  "name": "codex-strand-orb",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A project-local voice-reactive Strand Orb companion for Codex.",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "43.1.0"
+  }
+}

@@ -1,0 +1,70 @@
+name: E2E gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source-repository:
+        description: Repository containing the skill source to validate
+        required: false
+        type: string
+      source-ref:
+        description: Git ref or SHA from the source repository
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate and package
+    runs-on: windows-latest
+    steps:
+      - name: Check out source under test
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source-repository || github.repository }}
+          ref: ${{ inputs.source-ref || github.sha }}
+          path: source
+
+      - name: Check out lab tooling
+        uses: actions/checkout@v4
+        with:
+          repository: walkingIssue/Codex-AI-presence-lab
+          ref: main
+          path: lab
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Project the installable skill
+        shell: pwsh
+        working-directory: lab
+        run: |
+          python tools/project_release.py --source ../source --output dist
+          python tools/e2e_check.py --source dist
+
+      - name: Create installable artifact
+        shell: pwsh
+        working-directory: lab
+        run: |
+          Compress-Archive -Path dist/skills/codex-voice -DestinationPath codex-ai-presence-skill.zip
+
+      - name: Upload installable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-ai-presence-skill
+          path: lab/codex-ai-presence-skill.zip
+          if-no-files-found: error
+

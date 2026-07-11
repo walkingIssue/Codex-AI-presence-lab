@@ -1,0 +1,140 @@
+"""Run the safe, no-model E2E gate for a projected Codex voice skill."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+REQUIRED_FILES = (
+    "SKILL.md",
+    "agents/openai.yaml",
+    "scripts/configuration.py",
+    "scripts/configure.py",
+    "scripts/setup.py",
+    "scripts/session_scope.py",
+    "scripts/speak.py",
+    "scripts/toggle.py",
+    "scripts/watcher.py",
+)
+
+
+def find_skill(source: Path) -> Path:
+    candidate = source / "skills" / "codex-voice"
+    if candidate.is_dir():
+        return candidate
+    if (source / "SKILL.md").is_file():
+        return source
+    raise SystemExit(f"Could not find skills/codex-voice under {source}")
+
+
+def run(command: list[str], cwd: Path, *, expect: int = 0) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout.rstrip())
+    if result.stderr:
+        print(result.stderr.rstrip(), file=sys.stderr)
+    if result.returncode != expect:
+        raise SystemExit(f"Command returned {result.returncode}, expected {expect}: {' '.join(command)}")
+    return result
+
+
+def assert_file(path: Path) -> None:
+    if not path.is_file():
+        raise SystemExit(f"Required file is missing: {path}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=Path.cwd())
+    args = parser.parse_args()
+    source = args.source.resolve()
+    skill = find_skill(source)
+
+    for relative in REQUIRED_FILES:
+        assert_file(skill / relative)
+    for path in skill.rglob("*.py"):
+        ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    skill_text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    if "name: codex-voice" not in skill_text or "configure.py" not in skill_text:
+        raise SystemExit("Skill metadata/configuration instructions are incomplete")
+    if (skill / "html").exists() or (skill / "media").exists():
+        raise SystemExit("Release skill still contains showcase media")
+
+    with tempfile.TemporaryDirectory(prefix="codex-voice-e2e-") as temporary:
+        root = Path(temporary)
+        project = root / "project"
+        scripts = project / "scripts"
+        voice_root = project / ".codex-voice"
+        scripts.mkdir(parents=True)
+        voice_root.mkdir()
+        for path in (skill / "scripts").glob("*.py"):
+            shutil.copy2(path, scripts / path.name)
+        (voice_root / "sessions.json").write_text(
+            json.dumps({"version": 1, "mode": "session", "sessions": {}}),
+            encoding="utf-8",
+        )
+
+        configure = scripts / "configure.py"
+        toggle = scripts / "toggle.py"
+        run([sys.executable, str(configure), "show"], project)
+        result = run(
+            [
+                sys.executable,
+                str(configure),
+                "set",
+                "--voice",
+                "bf_isabella",
+                "--speed",
+                "1.08",
+                "--mode",
+                "quality",
+                "--provider",
+                "cpu",
+                "--volume",
+                "60",
+                "--commentary-volume",
+                "100",
+                "--progress",
+                "on",
+                "--orb",
+                "off",
+                "--scope",
+                "off",
+            ],
+            project,
+        )
+        if "commentary volume: 100%" not in result.stdout:
+            raise SystemExit("Configuration output did not report commentary volume")
+        expected = {
+            "voice": "bf_isabella",
+            "speed": "1.08",
+            "mode": "quality",
+            "provider": "cpu",
+            "volume": "60",
+            "commentary-volume": "100",
+        }
+        for name, value in expected.items():
+            actual = (voice_root / name).read_text(encoding="utf-8").strip()
+            if actual != value:
+                raise SystemExit(f"{name} persisted as {actual!r}, expected {value!r}")
+        if not (voice_root / "progress").is_file() or (voice_root / "orb.enabled").exists():
+            raise SystemExit("Progress or Orb marker state was not persisted safely")
+        status = run([sys.executable, str(toggle), "status"], project)
+        if "commentary volume: 100%" not in status.stdout:
+            raise SystemExit("toggle status omitted commentary volume")
+        run([sys.executable, str(configure), "set", "--speed", "3"], project, expect=2)
+        run([sys.executable, str(skill / "scripts" / "setup.py"), "--help"], project)
+
+    print("Codex AI Presence E2E gate passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

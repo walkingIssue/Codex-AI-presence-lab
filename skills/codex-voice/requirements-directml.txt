@@ -1,0 +1,7 @@
+# kokoro-onnx is installed from the Intel Arc fork by setup.py with --no-deps.
+numpy==2.5.1
+onnx==1.22.0
+onnxruntime-directml==1.24.4
+soundfile==0.14.0
+phonemizer-fork==3.3.2
+espeakng-loader==0.2.4
