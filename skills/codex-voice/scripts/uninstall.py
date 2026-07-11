@@ -34,7 +34,7 @@ def expected_hook_command(project_root: Path, voice_root: Path) -> str:
     return f'"{python}" "{hook}"'
 
 
-def is_managed_wrapper(wrapper: object, expected: str, project_root: Path, voice_root: Path) -> bool:
+def is_managed_wrapper(wrapper: object, expected: str, project_root: Path) -> bool:
     if not isinstance(wrapper, dict):
         return False
     entries = wrapper.get("hooks")
@@ -42,7 +42,6 @@ def is_managed_wrapper(wrapper: object, expected: str, project_root: Path, voice
         return False
     expected_text = normalized(expected)
     hook_text = normalized(project_root / ".codex" / "hooks" / "speak.py")
-    voice_text = normalized(voice_root)
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -55,7 +54,6 @@ def is_managed_wrapper(wrapper: object, expected: str, project_root: Path, voice
                 return True
             if (
                 hook_text in command_text
-                and voice_text in command_text
                 and entry.get("statusMessage") == MANAGED_STATUS
             ):
                 return True
@@ -85,7 +83,7 @@ def remove_hook_registration(project_root: Path, voice_root: Path) -> tuple[bool
     retained = [
         wrapper
         for wrapper in stop_hooks
-        if not is_managed_wrapper(wrapper, expected, project_root, voice_root)
+        if not is_managed_wrapper(wrapper, expected, project_root)
     ]
     removed = len(stop_hooks) - len(retained)
     if not removed:
