@@ -201,13 +201,13 @@ function beginDrag(event) {
 
 // Electron forwards mouse movement while the transparent window is
 // click-through. Use that safe signal to arm the window before the deliberate
-// Ctrl/Cmd+Alt+left-button gesture arrives.
+// Ctrl/Cmd+Alt+left-button gesture arrives. Forwarded mousemove events do not
+// reliably preserve `buttons`, so the left-button check belongs on pointerdown.
 window.addEventListener("mousemove", (event) => {
   const wantsMove = moveModifierHeld(event);
-  if (!moveMode && !dragging && wantsMove && event.buttons === 1) {
+  if (!moveMode && !dragging && wantsMove) {
     setMoveMode(true);
     window.orbApi.setMoveMode(true);
-    beginDrag(event);
   } else if (moveMode && dragging) {
     window.orbApi.drag({ screenX: event.screenX, screenY: event.screenY });
   } else if (moveMode && !dragging && !wantsMove) {
