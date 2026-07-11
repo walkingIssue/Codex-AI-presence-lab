@@ -166,6 +166,7 @@ def main() -> int:
             raise SystemExit("Uninstaller did not remove the project-local integration")
         remaining_hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
         if remaining_hooks.get("hooks", {}).get("Stop"):
+            print(json.dumps(remaining_hooks, indent=2))
             raise SystemExit("Uninstaller left the managed Stop hook registered")
 
     print("Codex AI Presence E2E gate passed")
