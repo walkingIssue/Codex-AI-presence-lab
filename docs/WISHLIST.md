@@ -50,9 +50,33 @@ Acceptance target: two simultaneous sessions in one project can use different vo
 - Make audio-reactive deformation configurable without coupling it to the voice implementation.
 - Add short, focused showcase clips for installation, voice changes, configuration, and Orb playback.
 
+## Companion window and placement
+
+- Make the Strand Orb movable from the desktop instead of fixing it to the lower-right corner.
+- Add an explicit move mode so the Orb remains click-through during normal use and only captures the pointer while being dragged.
+- Persist the window position per project, clamp it to the current display work area, and provide a reset-position command.
+- Handle display changes, resolution changes, and multi-monitor layouts without stranding the window off-screen.
+- Add a small visual affordance while move mode is active so users know when the Orb can be grabbed.
+
+## Linux and cross-platform runtime
+
+- Run the voice worker and Orb on Linux without requiring PowerShell.
+- Add a platform abstraction for process launch/stop, virtual-environment paths, audio playback, hook installation, and desktop integration.
+- Keep Bash scripts as thin convenience wrappers around the platform-neutral Python runtime instead of duplicating lifecycle logic.
+- Validate CPU first, then NVIDIA CUDA where available; treat DirectML as a Windows-only provider path.
+- Test the Electron companion on X11 and Wayland, treating persisted absolute placement as a compatibility item until both desktop modes are verified.
+- Add macOS support only after the Linux lifecycle and audio abstractions are stable.
+
+## Host adapters and portable presence protocol
+
+- Separate the Kokoro worker and Orb runtime from the Codex-specific hook and rollout watcher.
+- Define a small local event protocol carrying host, project, session, response phase, text, and timing metadata.
+- Keep Codex as the first adapter, then add a generic JSONL/stdin adapter that Warp or another agentic environment can feed without knowing the Kokoro internals.
+- Add host adapters as installable integration layers rather than multiplying platform-specific copies of the core skill.
+- Preserve the current safety rule across adapters: speak visible assistant output and explicitly enabled commentary only, never hidden reasoning or raw tool output.
+
 ## Release and maintenance
 
 - Add release metadata and compatibility reporting to nightly snapshots.
 - Add automated checks for stale session state and safe cleanup.
 - Add a small configuration matrix test covering project defaults, session overrides, and fallback behavior.
-
