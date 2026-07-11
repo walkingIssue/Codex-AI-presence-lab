@@ -21,6 +21,7 @@ REQUIRED_FILES = (
     "scripts/session_scope.py",
     "scripts/speak.py",
     "scripts/toggle.py",
+    "scripts/uninstall.py",
     "scripts/watcher.py",
 )
 
@@ -131,6 +132,41 @@ def main() -> int:
             raise SystemExit("toggle status omitted commentary volume")
         run([sys.executable, str(configure), "set", "--speed", "3"], project, expect=2)
         run([sys.executable, str(skill / "scripts" / "setup.py"), "--help"], project)
+
+        hooks_dir = project / ".codex" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        hook = hooks_dir / "speak.py"
+        shutil.copy2(skill / "scripts" / "speak.py", hook)
+        hooks_path = project / ".codex" / "hooks.json"
+        python_path = voice_root / ".venv" / "Scripts" / "python.exe"
+        command = f'"{python_path}" "{hook}"'
+        hooks_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "Stop": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": command,
+                                        "commandWindows": command,
+                                        "statusMessage": "Speaking Codex response",
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        run([sys.executable, str(skill / "scripts" / "uninstall.py"), "--project-root", str(project), "--yes"], project)
+        if voice_root.exists() or hook.exists():
+            raise SystemExit("Uninstaller did not remove the project-local integration")
+        remaining_hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+        if remaining_hooks.get("hooks", {}).get("Stop"):
+            raise SystemExit("Uninstaller left the managed Stop hook registered")
 
     print("Codex AI Presence E2E gate passed")
     return 0
