@@ -14,9 +14,11 @@ from pathlib import Path
 
 REQUIRED_FILES = (
     "SKILL.md",
+    "RUNTIME-MANIFEST.md",
     "agents/openai.yaml",
     "scripts/configuration.py",
     "scripts/configure.py",
+    "scripts/activity.py",
     "scripts/setup.py",
     "scripts/session_scope.py",
     "scripts/speak.py",
@@ -65,6 +67,30 @@ def main() -> int:
     skill_text = (skill / "SKILL.md").read_text(encoding="utf-8")
     if "name: codex-voice" not in skill_text or "configure.py" not in skill_text:
         raise SystemExit("Skill metadata/configuration instructions are incomplete")
+
+    sys.path.insert(0, str(skill / "scripts"))
+    from activity import classify_activity
+    from setup import install_activity_script, install_runtime_manifest
+    from uninstall import read_runtime_manifest
+
+    manifest_text = (skill / "RUNTIME-MANIFEST.md").read_text(encoding="utf-8")
+    for required_entry in (".codex-voice/activity.py", ".codex-voice/orb/", ".codex/hooks/speak.py"):
+        if required_entry not in manifest_text:
+            raise SystemExit(f"Runtime manifest omitted required artifact: {required_entry}")
+
+    activity_cases = (
+        ({"type": "event_msg", "payload": {"type": "agent_reasoning"}}, "thinking"),
+        ({"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec"}}, "cli"),
+        ({"type": "response_item", "payload": {"type": "custom_tool_call", "name": "other"}}, "tool"),
+        ({"type": "response_item", "payload": {"type": "custom_tool_call_output"}}, "thinking"),
+        ({"type": "event_msg", "payload": {"type": "patch_apply_end"}}, "cli"),
+        ({"type": "event_msg", "payload": {"type": "agent_message", "phase": "final_answer"}}, "idle"),
+    )
+    for record, expected in activity_cases:
+        if classify_activity(record) != expected:
+            raise SystemExit(f"Activity classification failed: {record!r}")
+    if classify_activity({"type": "response_item", "payload": {"type": "reasoning"}}) is not None:
+        raise SystemExit("Hidden reasoning content was incorrectly exposed as an activity event")
     if (skill / "html").exists() or (skill / "media").exists():
         raise SystemExit("Release skill still contains showcase media")
 
@@ -75,6 +101,13 @@ def main() -> int:
         voice_root = project / ".codex-voice"
         scripts.mkdir(parents=True)
         voice_root.mkdir()
+        install_activity_script(voice_root)
+        install_runtime_manifest(voice_root)
+        if not (voice_root / "activity.py").is_file():
+            raise SystemExit("Setup did not install the activity bridge into the project runtime")
+        manifest_entries = read_runtime_manifest(voice_root)
+        if manifest_entries is None or ".codex-voice/activity.py" not in manifest_entries:
+            raise SystemExit("Setup did not install a readable runtime manifest")
         for path in (skill / "scripts").glob("*.py"):
             shutil.copy2(path, scripts / path.name)
         (voice_root / "sessions.json").write_text(

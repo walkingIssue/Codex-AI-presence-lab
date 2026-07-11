@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex AI Presence"
   short_description: "Control local Kokoro voice and orb output"
-  default_prompt: "Use $codex-voice to set up, uninstall, enable, disable, configure, or explain every available local Codex voice, playback, provider, scope, progress, volume, Orb, and Orb-position setting."
+  default_prompt: "Use $codex-voice to set up, uninstall, enable, disable, configure, or explain every available local Codex voice, playback, provider, scope, progress, volume, Orb, Orb-position, and activity-state setting."

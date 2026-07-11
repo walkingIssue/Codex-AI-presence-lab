@@ -17,6 +17,7 @@ This repository is intentionally richer than the distributable skill. It holds t
 - `skills/codex-voice/` — source skill under development.
 - `tools/project_release.py` — projects only the installable skill into a clean artifact.
 - `tools/e2e_check.py` — runs the configuration and package-boundary smoke test.
+- `skills/codex-voice/RUNTIME-MANIFEST.md` — tracks project-local runtime ownership and cleanup for each release revision.
 - `docs/ROADMAP.md` — current foundation and near-term experiments.
 - `docs/WISHLIST.md` — lab-only feature backlog, including per-session profiles.
 - `docs/IMPLEMENTATION-NOTES.md` — feasibility notes for movement, Linux, and host adapters.

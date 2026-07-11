@@ -61,6 +61,12 @@ to remove a changed `speak.py` unless `--force` is supplied. Use
 `--keep-assets` when only the hook and runtime markers should be removed while
 retaining downloaded models and environments.
 
+Every projected revision includes `RUNTIME-MANIFEST.md`. Setup copies it to
+`.codex-voice/RUNTIME-MANIFEST.md`; it records the project-local files and the
+managed hook boundary. New runtime artifacts must be added to that manifest
+in the same PR or push. Full uninstall removes the entire `.codex-voice`
+boundary, so newly added files inside it are cleaned up automatically.
+
 ## Configuration
 
 When the user asks what can be changed, run the complete matrix first:
@@ -95,6 +101,37 @@ uses the configured commentary-volume ratio of the main response volume.
 Environment variables such as
 `CODEX_TTS_VOICE` and `CODEX_TTS_SPEED` override project markers for advanced
 use; prefer the configure command for normal project-local changes.
+
+## Orb activity states
+
+The Orb has a separate coarse activity channel for work that is not speech.
+It never sends the underlying reasoning, tool name, command, arguments, or
+paths to the renderer.
+
+| State | Visual role |
+| --- | --- |
+| `idle` | Calm cyan baseline |
+| `thinking` | Slow indigo/violet breathing |
+| `tool` | Amber external-tool pulse |
+| `skill` | Magenta integration pulse |
+| `cli` | Green local-command pulse |
+| `waiting` | Dim blue waiting halo |
+| `error` | Short red warning pulse |
+
+Codex rollout metadata automatically drives `thinking`, `tool`, `cli`, and
+`idle`. A host adapter or skill can emit an explicit category through the
+project-local bridge:
+
+```powershell
+python .codex-voice/activity.py skill
+python .codex-voice/activity.py cli --ttl-ms 5000
+python .codex-voice/activity.py idle
+```
+
+Use `--project-root PATH` when the command is launched outside the project.
+Activity packets expire automatically, and the Orb falls back to `idle` if a
+watcher or adapter disappears. Activity is independent from audio playback;
+the speaking waveform takes visual priority while Kokoro is playing.
 
 ## Controls
 

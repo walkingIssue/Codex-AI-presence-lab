@@ -94,7 +94,7 @@ generic adapter accepts JSONL over stdin or a localhost IPC endpoint. The
 core worker should not need to know whether the event came from Codex, Warp,
 or another development environment.
 
-## Proposed activity-state layer
+## Activity-state layer
 
 The current renderer consumes `state` events for speaking/not-speaking and
 `audio` events for amplitude and frequency bands. That is enough for playback
@@ -130,7 +130,7 @@ These are categories, not transcripts. The host adapter should emit them from
 explicit lifecycle records and never forward the underlying tool name,
 command, arguments, paths, or hidden reasoning to the renderer.
 
-The intended flow is:
+The implemented flow is:
 
 ```mermaid
 stateDiagram-v2
@@ -158,6 +158,14 @@ Each state needs a heartbeat/expiry path and a safe fallback to `idle`.
 The Orb theme work should eventually allow users to customize the state-to-
 color mapping, intensity, pulse speed, and transition style without changing
 the host adapter or Kokoro worker.
+
+The current lab implementation adds `scripts/activity.py` as a small
+category-only UDP bridge. The rollout watcher classifies lifecycle metadata
+without reading message or tool content, aggregates selected sessions, sends
+state leases with heartbeats, and expires them back to `idle`. The renderer
+keeps activity separate from audio amplitude and suppresses activity tint
+while speech is active. Explicit `skill`, `waiting`, and `error` states are
+available to future adapters through the same bridge.
 
 ## Representation direction
 

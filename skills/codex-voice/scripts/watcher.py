@@ -8,9 +8,11 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from activity import ActivityEmitter, classify_activity, state_ttl_seconds
 from configuration import configured_commentary_volume
 from session_scope import (
     is_project_mode,
@@ -21,6 +23,7 @@ from session_scope import (
 
 
 POLL_SECONDS = 0.4
+ACTIVITY_HEARTBEAT_SECONDS = 1.25
 
 
 def log(voice_root: Path, message: str) -> None:
@@ -134,6 +137,66 @@ def progress_enabled(voice_root: Path) -> bool:
     except OSError:
         return False
     return value in {"1", "true", "on", "enabled"}
+
+
+@dataclass
+class ActivityLease:
+    state: str
+    session_id: str | None
+    seen_at: float
+
+
+class ActivityTracker:
+    """Aggregate selected rollout activity and keep the Orb state lease alive."""
+
+    def __init__(self) -> None:
+        self.emitter = ActivityEmitter()
+        self.leases: dict[Path, ActivityLease] = {}
+        self.last_key: tuple[str, str | None, Path | None] | None = None
+        self.last_sent_at = 0.0
+
+    def _visible(self, now: float) -> tuple[str, str | None, Path | None, float]:
+        for path, lease in list(self.leases.items()):
+            if now - lease.seen_at > state_ttl_seconds(lease.state):
+                self.leases.pop(path, None)
+        if not self.leases:
+            return "idle", None, None, 0.0
+        path, lease = max(self.leases.items(), key=lambda item: item[1].seen_at)
+        return lease.state, lease.session_id, path, lease.seen_at
+
+    def update(self, path: Path, state: str, session_id: str | None, now: float) -> None:
+        if state == "idle":
+            self.leases.pop(path, None)
+        else:
+            self.leases[path] = ActivityLease(state, session_id, now)
+        self.tick(now, force=True)
+
+    def tick(self, now: float, *, force: bool = False) -> None:
+        state, session_id, path, seen_at = self._visible(now)
+        key = (state, session_id, path)
+        if not force and key == self.last_key and now - self.last_sent_at < ACTIVITY_HEARTBEAT_SECONDS:
+            return
+        if state == "idle":
+            ttl_ms = 0
+        else:
+            remaining = max(0.5, state_ttl_seconds(state) - (now - seen_at))
+            ttl_ms = round(remaining * 1000)
+        self.emitter.send(
+            state,
+            source="codex-rollout",
+            session_id=session_id,
+            ttl_ms=ttl_ms,
+        )
+        self.last_key = key
+        self.last_sent_at = now
+
+    def reset(self, now: float) -> None:
+        self.leases.clear()
+        self.tick(now, force=True)
+
+    def close(self, now: float) -> None:
+        self.reset(now)
+        self.emitter.close()
 
 
 def configured_volume(voice_root: Path) -> int:
@@ -418,7 +481,10 @@ def main() -> int:
     streams: dict[Path, tuple[int, bytes]] = {}
     announced: set[Path] = set()
     seen: set[tuple[str, str, str, str]] = set()
+    seen_activity: set[tuple[str, str, str, str, str]] = set()
     worker = TTSWorker(project_root, voice_root)
+    activity_tracker = ActivityTracker()
+    activity_tracker.reset(time.monotonic())
     worker.start()
 
     try:
@@ -429,6 +495,8 @@ def main() -> int:
                 scope_state_mtime = current_scope_mtime
                 streams.clear()
                 announced.clear()
+                seen_activity.clear()
+                activity_tracker.reset(time.monotonic())
                 log(
                     voice_root,
                     f"scope changed: {'project' if is_project_mode(scope_state) else 'session'} "
@@ -465,6 +533,21 @@ def main() -> int:
             for record_time, path, record in events:
                 if record_time is not None and record_time < args.start_time:
                     continue
+                activity_state = classify_activity(record)
+                if activity_state is not None:
+                    payload = record.get("payload")
+                    payload_type = payload.get("type") if isinstance(payload, dict) else ""
+                    activity_key = (
+                        str(path),
+                        str(record.get("timestamp")),
+                        str(record.get("type")),
+                        str(payload_type),
+                        activity_state,
+                    )
+                    if activity_key not in seen_activity:
+                        seen_activity.add(activity_key)
+                        session_id = session_metadata(path)[1]
+                        activity_tracker.update(path, activity_state, session_id, time.monotonic())
                 commentary = commentary_message(record) if progress_enabled(voice_root) else None
                 if commentary is not None:
                     key = (str(path), str(record.get("timestamp")), "commentary", commentary)
@@ -492,6 +575,7 @@ def main() -> int:
                 seen.add(key)
                 log(voice_root, f"speaking final answer: {len(message)} characters")
                 speak(project_root, voice_root, message, worker=worker)
+            activity_tracker.tick(time.monotonic())
             time.sleep(POLL_SECONDS)
         log(voice_root, "stopping: voice marker is off")
     except KeyboardInterrupt:
@@ -500,6 +584,7 @@ def main() -> int:
         log(voice_root, f"crashed: {type(exc).__name__}: {exc}")
     finally:
         worker.close()
+        activity_tracker.close(time.monotonic())
         try:
             if pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
                 pid_path.unlink(missing_ok=True)

@@ -12,6 +12,7 @@ The release repository is promoted only after the E2E workflow is green.
 - Invalid speed and volume values are rejected.
 - Provider selection refuses unavailable CUDA or DirectML runtimes instead of silently claiming readiness.
 - The skill does not package recordings, roadmap files, model weights, voice bundles, secrets, or local runtime state.
+- `RUNTIME-MANIFEST.md` is present, lists every project-local runtime boundary, and is updated with each runtime-affecting PR or push.
 
 ## Promotion rule
 

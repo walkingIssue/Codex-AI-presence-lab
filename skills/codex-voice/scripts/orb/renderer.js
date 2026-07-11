@@ -32,6 +32,10 @@ uniform float u_amplitude;
 uniform float u_speaking;
 uniform float u_cadence;
 uniform float u_bands[16];
+uniform vec3 u_activity_color;
+uniform float u_activity_energy;
+uniform float u_activity_kind;
+uniform float u_activity_node_bounce;
 
 const float PI = 3.14159265359;
 const float TAU = 6.28318530718;
@@ -58,6 +62,15 @@ void main() {
   float radius = length(p);
   float angle = atan(p.y, p.x);
 
+  float thinkingState = 1.0 - step(0.5, abs(u_activity_kind - 1.0));
+  float toolState = 1.0 - step(0.5, abs(u_activity_kind - 2.0));
+  float skillState = 1.0 - step(0.5, abs(u_activity_kind - 3.0));
+  float cliState = 1.0 - step(0.5, abs(u_activity_kind - 4.0));
+  float waitingState = 1.0 - step(0.5, abs(u_activity_kind - 5.0));
+  float errorState = 1.0 - step(0.5, abs(u_activity_kind - 6.0));
+  float speechSuppression = 1.0 - smoothstep(0.05, 0.85, u_speaking);
+  float activityEnergy = clamp(u_activity_energy, 0.0, 1.0) * speechSuppression;
+
   float angularPosition = fract(angle / TAU + 0.5);
   float spectral = 0.0;
   for (int i = 0; i < 16; i++) {
@@ -76,6 +89,32 @@ void main() {
   float volumeLight = voice * 0.55;
   float impactLight = impact * 0.62;
 
+  float thinkingPulse = 0.5 + 0.5 * sin(time * 1.35) + 0.08 * sin(time * 2.4 + 1.0);
+  float toolPulse = 0.5 + 0.5 * sin(time * 4.4 + sin(angle * 3.0) * 0.55);
+  float skillPulse = 0.5 + 0.5 * sin(time * 2.15 + 0.7);
+  float cliPulse = 0.5 + 0.5 * sin(time * 3.1 + angle * 2.0);
+  float waitingPulse = 0.5 + 0.5 * sin(time * 0.72);
+  float errorPulse = 0.5 + 0.5 * sin(time * 8.0);
+  float activityPulse = clamp(
+    thinkingState * thinkingPulse
+      + toolState * toolPulse
+      + skillState * skillPulse
+      + cliState * cliPulse
+      + waitingState * waitingPulse
+      + errorState * errorPulse,
+    0.0,
+    1.0
+  );
+  float activityGeometry = activityEnergy * (
+    thinkingState * (0.010 + 0.010 * activityPulse) * sin(angle * 5.0 + time * 0.8)
+      + toolState * (0.014 + 0.016 * activityPulse) * sin(angle * 9.0 - time * 3.2)
+      + skillState * (0.012 + 0.010 * activityPulse) * sin(angle * 3.0 + time * 1.2)
+      + cliState * (0.013 + 0.013 * activityPulse) * sin(angle * 11.0 + time * 2.5)
+      + waitingState * 0.006 * sin(angle * 2.0 - time * 0.6)
+      + errorState * 0.028 * sin(angle * 13.0 - time * 9.0)
+  );
+  float activityLight = activityEnergy * (0.22 + 0.58 * activityPulse);
+
   float idleBreath = 0.5 + 0.5 * sin(time * 2.4) + 0.12 * sin(time * 5.1 + 1.4);
   float breathing = 0.018 * sin(time * 1.4) + 0.012 * sin(time * 2.1 + 1.7);
   float ringRadius = 0.57 + breathing
@@ -86,7 +125,8 @@ void main() {
     + u_speaking * geometryImpact * 0.015 * sin(angle * 5.0 + time * 11.0)
     + cadence * (0.016 + 0.022 * cadenceWave) * sin(angle * 7.0 - time * 5.0)
     + cadenceRipple * 0.022 * sin(angle * 11.0 + time * 3.0)
-    + cadenceAsymmetry * 0.050;
+    + cadenceAsymmetry * 0.050
+    + activityGeometry;
 
   float ringDistance = abs(radius - ringRadius);
   float ring = gaussian(ringDistance, 0.0015 + voice * 0.0065);
@@ -98,7 +138,8 @@ void main() {
   float strandReach = 0.68 + voice * 0.10
     + u_speaking * spectral * (0.06 + geometryImpact * 0.04)
     + cadence * (0.040 + cadenceRipple * 0.065)
-    + cadenceAsymmetry * 0.050;
+    + cadenceAsymmetry * 0.050
+    + activityGeometry * 1.15;
   float strandEnd = 0.88 + u_speaking * spectral * 0.03 + geometryImpact * 0.012
     + cadence * 0.020
     + cadenceAsymmetry * 0.020;
@@ -117,7 +158,8 @@ void main() {
     + 0.026 * sin(angle * 21.0 - time * 2.2)
     + geometryImpact * 0.022
     + cadence * (0.009 + cadenceWave * 0.015)
-    + cadenceAsymmetry * 0.030;
+    + cadenceAsymmetry * 0.030
+    + activityGeometry * 0.70;
   float secondary = gaussian(abs(radius - secondaryRadius), 0.0020 + voice * 0.0045)
     * (0.22 + 0.78 * (1.0 - strands));
   float innerCircleRadius = 0.33 + 0.010 * sin(angle * 11.0 + time * 1.3);
@@ -129,7 +171,22 @@ void main() {
     + cadence * (0.010 + 0.012 * cadenceWave) * sin(angle * 5.0 - time * 4.0)
     + cadenceAsymmetry * 0.020;
   float innerHalo = gaussian(abs(radius - innerHaloRadius), 0.035 + voice * 0.014)
-    * (0.07 + u_speaking * 0.12 + cadenceLight * 0.20);
+    * (0.07 + u_speaking * 0.12 + cadenceLight * 0.20 + activityLight * 0.28);
+  float activityHalo = gaussian(
+    abs(radius - (0.39 + 0.012 * sin(angle * 4.0 + time * 0.9))),
+    0.020 + activityEnergy * 0.014
+  ) * activityLight;
+  float nodeBounce = clamp(u_activity_node_bounce, -1.0, 1.0);
+  float nodeRadius = max(
+    0.012,
+    0.034 + activityEnergy * (0.012 + 0.010 * activityPulse) + nodeBounce * 0.018
+  );
+  float activityNode = (1.0 - smoothstep(nodeRadius * 0.72, nodeRadius, radius))
+    * activityEnergy * (0.60 + 0.40 * activityPulse);
+  float activityNodeEdge = gaussian(
+    abs(radius - nodeRadius),
+    0.0012 + activityEnergy * 0.003
+  ) * activityEnergy * (0.35 + 0.65 * activityPulse);
 
   float core = gaussian(radius, 0.045 + voice * 0.18) * (0.62 + 0.38 * idleBreath);
   float halo = gaussian(max(radius - 0.10, 0.0), 0.14 + voice * 0.16) * (0.20 + volumeLight * 0.30);
@@ -143,12 +200,16 @@ void main() {
   vec3 white = vec3(0.82, 0.98, 1.0);
   vec3 color = mix(cyan, violet, 0.34 + 0.22 * sin(time * 0.7));
   color = mix(color, white, clamp(core * 0.70 + shimmer * 0.28 + playbackInnerCircle * 0.16 + innerHalo * 0.24, 0.0, 0.85));
+  float activityTint = activityEnergy * (0.20 + 0.34 * activityPulse);
+  color = mix(color, u_activity_color, clamp(activityTint + activityNode * 0.62, 0.0, 0.80));
 
   float baselineStructure = ring * (0.58 + 0.98 * strands) + filament * 0.82
-    + secondary * 0.60 + innerCircle * 0.76 + shimmer * 0.40 + core * 0.28 + halo * 0.20;
+    + secondary * 0.60 + innerCircle * 0.76 + shimmer * 0.40 + core * 0.28 + halo * 0.20
+    + activityHalo * 0.72 + activityNode * 0.95 + activityNodeEdge * 0.40;
   float activeStructure = ring * (0.54 + 1.02 * strands) + filament * 0.84
     + secondary * 0.54 + playbackInnerCircle * 0.34 + shimmer * 0.62 + shock * 0.54
-    + cadenceLightRipple * 0.18 + innerHalo * 0.70 + core * 0.22 + halo * 0.14;
+    + cadenceLightRipple * 0.18 + innerHalo * 0.70 + core * 0.22 + halo * 0.14
+    + activityHalo * 0.60 + activityNode * 0.72 + activityNodeEdge * 0.28;
   float activeMix = clamp(max(u_speaking * 1.25, voice * 0.98), 0.0, 1.0);
   float structure = mix(baselineStructure, activeStructure, activeMix);
   float alpha = clamp(structure * (1.02 + volumeLight * 0.75), 0.0, 0.98);
@@ -189,6 +250,10 @@ const uniforms = {
   speaking: gl.getUniformLocation(program, "u_speaking"),
   cadence: gl.getUniformLocation(program, "u_cadence"),
   bands: gl.getUniformLocation(program, "u_bands[0]"),
+  activityColor: gl.getUniformLocation(program, "u_activity_color"),
+  activityEnergy: gl.getUniformLocation(program, "u_activity_energy"),
+  activityKind: gl.getUniformLocation(program, "u_activity_kind"),
+  activityNodeBounce: gl.getUniformLocation(program, "u_activity_node_bounce"),
 };
 
 let targetAmplitude = 0;
@@ -201,8 +266,36 @@ let lastAudioAmplitude = 0;
 let lastBandEnergy = 0;
 const targetBands = new Float32Array(16);
 const bands = new Float32Array(16);
+const ACTIVITY_STATES = ["idle", "thinking", "tool", "skill", "cli", "waiting", "error"];
+const ACTIVITY_COLORS = {
+  idle: [0.12, 0.88, 1.0],
+  thinking: [0.34, 0.24, 1.0],
+  tool: [1.0, 0.56, 0.12],
+  skill: [0.90, 0.20, 0.96],
+  cli: [0.20, 1.0, 0.48],
+  waiting: [0.20, 0.60, 1.0],
+  error: [1.0, 0.16, 0.18],
+};
+const ACTIVITY_ENERGY = {
+  idle: 0.0,
+  thinking: 0.62,
+  tool: 0.76,
+  skill: 0.68,
+  cli: 0.72,
+  waiting: 0.34,
+  error: 0.90,
+};
 let moveMode = false;
 let dragging = false;
+let activityKind = 0;
+let targetActivityEnergy = 0;
+let activityEnergy = 0;
+let activityExpiresAt = 0;
+let activityNodeBounce = 0;
+let activityNodeVelocity = 0;
+let lastFrameMilliseconds = 0;
+const targetActivityColor = new Float32Array(ACTIVITY_COLORS.idle);
+const activityColor = new Float32Array(ACTIVITY_COLORS.idle);
 
 function moveModifierHeld(event) {
   return Boolean(event.altKey && (event.ctrlKey || event.metaKey));
@@ -288,7 +381,28 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+function setActivityState(state, ttlMs = 0) {
+  const normalized = ACTIVITY_STATES.includes(state) ? state : "idle";
+  const previous = ACTIVITY_STATES[activityKind];
+  if (normalized !== previous) {
+    activityNodeVelocity += normalized === "idle" ? -3.6 : 5.5;
+  }
+  activityKind = ACTIVITY_STATES.indexOf(normalized);
+  targetActivityEnergy = ACTIVITY_ENERGY[normalized];
+  const nextColor = ACTIVITY_COLORS[normalized];
+  for (let index = 0; index < targetActivityColor.length; index += 1) {
+    targetActivityColor[index] = nextColor[index];
+  }
+  activityExpiresAt = normalized === "idle" || ttlMs <= 0
+    ? 0
+    : performance.now() + Math.max(500, Math.min(30000, Number(ttlMs) || 0));
+}
+
 window.orbApi.onAudioEvent((event) => {
+  if (event.type === "activity") {
+    setActivityState(event.state, Number(event.ttl_ms) || 0);
+    return;
+  }
   if (event.type === "state") {
     targetSpeaking = event.state === "speaking" ? 1 : 0;
     if (targetSpeaking) {
@@ -336,6 +450,13 @@ function resize() {
 
 function render(milliseconds) {
   resize();
+  const deltaSeconds = lastFrameMilliseconds === 0
+    ? 1 / 60
+    : Math.min(0.05, Math.max(0.001, (milliseconds - lastFrameMilliseconds) / 1000));
+  lastFrameMilliseconds = milliseconds;
+  if (activityExpiresAt > 0 && performance.now() >= activityExpiresAt) {
+    setActivityState("idle");
+  }
   // Keep the attack lively, but let the natural signal decay carry the release.
   amplitude += (targetAmplitude - amplitude) * (targetSpeaking ? 0.32 : 0.05);
   targetAmplitude *= targetSpeaking ? 0.985 : 0.992;
@@ -345,6 +466,13 @@ function render(milliseconds) {
   for (let index = 0; index < bands.length; index += 1) {
     bands[index] += (targetBands[index] - bands[index]) * (targetSpeaking ? 0.26 : 0.05);
     targetBands[index] *= targetSpeaking ? 0.995 : 0.98;
+  }
+  activityNodeVelocity += (-activityNodeBounce * 88 - activityNodeVelocity * 15) * deltaSeconds;
+  activityNodeBounce += activityNodeVelocity * deltaSeconds;
+  activityNodeBounce = Math.max(-1, Math.min(1, activityNodeBounce));
+  activityEnergy += (targetActivityEnergy - activityEnergy) * (targetActivityEnergy > activityEnergy ? 0.10 : 0.045);
+  for (let index = 0; index < activityColor.length; index += 1) {
+    activityColor[index] += (targetActivityColor[index] - activityColor[index]) * 0.075;
   }
 
   gl.clearColor(0, 0, 0, 0);
@@ -358,6 +486,10 @@ function render(milliseconds) {
   gl.uniform1f(uniforms.speaking, speaking);
   gl.uniform1f(uniforms.cadence, cadence);
   gl.uniform1fv(uniforms.bands, bands);
+  gl.uniform3fv(uniforms.activityColor, activityColor);
+  gl.uniform1f(uniforms.activityEnergy, activityEnergy);
+  gl.uniform1f(uniforms.activityKind, activityKind);
+  gl.uniform1f(uniforms.activityNodeBounce, activityNodeBounce);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   requestAnimationFrame(render);
 }

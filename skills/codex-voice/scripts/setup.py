@@ -17,6 +17,7 @@ from session_scope import ensure_state_file
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_ROOT = Path(__file__).resolve().parent
+RUNTIME_MANIFEST_NAME = "RUNTIME-MANIFEST.md"
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 DIRECTML_KOKORO_URL = "git+https://github.com/walkingIssue/kokoro-onnx-intel-arc.git@intel-arc-directml"
@@ -277,6 +278,16 @@ def install_start_script(voice_root: Path) -> None:
     shutil.copy2(SCRIPT_ROOT / "start_voice.ps1", voice_root / "start_voice.ps1")
 
 
+def install_activity_script(voice_root: Path) -> None:
+    """Expose the host-adapter activity bridge from the project runtime."""
+    shutil.copy2(SCRIPT_ROOT / "activity.py", voice_root / "activity.py")
+
+
+def install_runtime_manifest(voice_root: Path) -> None:
+    """Copy the tracked ownership inventory into the project runtime."""
+    shutil.copy2(SKILL_ROOT / RUNTIME_MANIFEST_NAME, voice_root / RUNTIME_MANIFEST_NAME)
+
+
 def provider_check(python: Path, label: str) -> None:
     result = subprocess.run(
         [str(python), "-c", "import onnxruntime as ort; print(','.join(ort.get_available_providers()))"],
@@ -389,6 +400,8 @@ def main() -> int:
     install_hook(project_root, voice_root, args.force)
     install_orb(voice_root, args.no_orb)
     install_start_script(voice_root)
+    install_activity_script(voice_root)
+    install_runtime_manifest(voice_root)
 
     print(f"Codex AI Presence setup complete in {project_root}")
     print(f"Base Python: {' '.join(base_python)}")

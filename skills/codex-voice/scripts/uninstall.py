@@ -12,6 +12,7 @@ from toggle import run_orb_script, stop_watcher
 
 
 MANAGED_STATUS = "Speaking Codex response"
+RUNTIME_MANIFEST_NAME = "RUNTIME-MANIFEST.md"
 
 
 def resolve_project_root(value: Path | None) -> Path:
@@ -26,6 +27,24 @@ def resolve_project_root(value: Path | None) -> Path:
 
 def normalized(value: object) -> str:
     return str(value).replace("\\", "/").lower()
+
+
+def read_runtime_manifest(voice_root: Path) -> tuple[str, ...] | None:
+    """Read the tracked artifact paths for diagnostics without trusting them for deletion."""
+    manifest = voice_root / RUNTIME_MANIFEST_NAME
+    try:
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    paths: list[str] = []
+    for line in lines:
+        cells = line.split("|")
+        if len(cells) < 4:
+            continue
+        path_cell = cells[2].strip()
+        if path_cell.startswith("`") and path_cell.endswith("`"):
+            paths.append(path_cell[1:-1])
+    return tuple(paths)
 
 
 def expected_hook_command(project_root: Path, voice_root: Path) -> str:
@@ -205,6 +224,11 @@ def main() -> int:
 
     project_root = resolve_project_root(args.project_root)
     voice_root = project_root / ".codex-voice"
+    manifest_entries = read_runtime_manifest(voice_root)
+    if manifest_entries is None:
+        print(f"Runtime manifest not found; using legacy safe cleanup: {voice_root / RUNTIME_MANIFEST_NAME}")
+    else:
+        print(f"Runtime manifest loaded: {len(manifest_entries)} registered artifact entries")
     stop_runtime(voice_root)
     registration_ok, removed = remove_hook_registration(project_root, voice_root)
     hook_ok = remove_hook_file(project_root, force=args.force)
