@@ -1,6 +1,6 @@
-# Roadmap and wishlist
+# Roadmap
 
-This is intentionally kept outside the distributable skill.
+This is intentionally kept outside the distributable skill. The detailed backlog is in [WISHLIST.md](WISHLIST.md).
 
 ## Current foundation
 
@@ -14,7 +14,7 @@ This is intentionally kept outside the distributable skill.
 ## Next experiments
 
 - App-server response-delta bridge for lower-latency text-to-speech handoff.
-- Optional per-session configuration profiles without changing the project default.
+- Optional [per-session configuration profiles](WISHLIST.md#per-session-configuration-profiles) without changing the project default.
 - A documented visual-theme format for custom Orb geometry and palettes.
 - Short, focused showcase clips for installation, voice changes, and Orb playback.
 - NVIDIA hardware validation and provider performance comparison.

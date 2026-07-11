@@ -17,7 +17,8 @@ This repository is intentionally richer than the distributable skill. It holds t
 - `skills/codex-voice/` — source skill under development.
 - `tools/project_release.py` — projects only the installable skill into a clean artifact.
 - `tools/e2e_check.py` — runs the configuration and package-boundary smoke test.
-- `docs/ROADMAP.md` — wishlist and longer-term experiments.
+- `docs/ROADMAP.md` — current foundation and near-term experiments.
+- `docs/WISHLIST.md` — lab-only feature backlog, including per-session profiles.
 - `docs/RELEASE-GATE.md` — the promotion contract.
 - `.github/workflows/e2e.yml` — reusable Windows E2E gate.
 - `.github/workflows/promote.yml` — manual, secret-gated release projection.
