@@ -176,22 +176,42 @@ function moveModifierHeld(event) {
 
 function setMoveMode(enabled) {
   moveMode = Boolean(enabled);
-  dragging = false;
+  if (!moveMode) {
+    dragging = false;
+    document.body.classList.remove("dragging");
+  }
   document.body.classList.toggle("move-mode", moveMode);
-  document.body.classList.remove("dragging");
   moveHint.hidden = !moveMode;
 }
 
 window.orbApi.onMoveMode(setMoveMode);
+
+function beginDrag(event) {
+  if (dragging) {
+    return;
+  }
+  dragging = true;
+  document.body.classList.add("dragging");
+  if (event.pointerId !== undefined) {
+    canvas.setPointerCapture(event.pointerId);
+  }
+  window.orbApi.dragStart({ screenX: event.screenX, screenY: event.screenY });
+  event.preventDefault();
+}
 
 // Electron forwards mouse movement while the transparent window is
 // click-through. Use that safe signal to arm the window before the deliberate
 // Ctrl/Cmd+Alt+left-button gesture arrives.
 window.addEventListener("mousemove", (event) => {
   const wantsMove = moveModifierHeld(event);
-  if (!moveMode && !dragging && wantsMove) {
+  if (!moveMode && !dragging && wantsMove && event.buttons === 1) {
+    setMoveMode(true);
     window.orbApi.setMoveMode(true);
+    beginDrag(event);
+  } else if (moveMode && dragging) {
+    window.orbApi.drag({ screenX: event.screenX, screenY: event.screenY });
   } else if (moveMode && !dragging && !wantsMove) {
+    setMoveMode(false);
     window.orbApi.setMoveMode(false);
   }
 });
@@ -200,11 +220,7 @@ canvas.addEventListener("pointerdown", (event) => {
   if (!moveMode || event.button !== 0 || !moveModifierHeld(event)) {
     return;
   }
-  dragging = true;
-  document.body.classList.add("dragging");
-  canvas.setPointerCapture(event.pointerId);
-  window.orbApi.dragStart({ screenX: event.screenX, screenY: event.screenY });
-  event.preventDefault();
+  beginDrag(event);
 });
 
 canvas.addEventListener("pointermove", (event) => {
@@ -225,6 +241,7 @@ function finishDrag(event) {
     canvas.releasePointerCapture(event.pointerId);
   }
   window.orbApi.dragEnd();
+  setMoveMode(false);
   window.orbApi.setMoveMode(false);
 }
 
@@ -232,6 +249,7 @@ canvas.addEventListener("pointerup", finishDrag);
 canvas.addEventListener("pointercancel", finishDrag);
 window.addEventListener("keydown", (event) => {
   if (moveMode && event.key === "Escape") {
+    setMoveMode(false);
     window.orbApi.setMoveMode(false);
   }
 });
