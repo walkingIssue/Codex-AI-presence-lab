@@ -18,6 +18,10 @@ python "$HOME/.codex/skills/codex-voice/scripts/setup.py"
 
 Use `--force` only when setup reports a different existing `.codex/hooks/speak.py`.
 Use `--no-orb` when the machine should not install the optional Electron orb.
+Setup selects Python 3.11 or 3.12 for the isolated environments because the
+current Kokoro package pins do not support Python 3.13+. Use `--python PATH` to
+choose a specific compatible interpreter when automatic selection is not
+available.
 
 After setup, ask the user which voice scope they want before enabling it:
 

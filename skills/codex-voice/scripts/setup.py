@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
-import venv
 from pathlib import Path
 
 from session_scope import ensure_state_file
@@ -49,6 +48,8 @@ ORB_FILES = (
     "start_orb.ps1",
     "stop_orb.ps1",
 )
+MIN_PYTHON = (3, 11)
+MAX_PYTHON = (3, 13)
 
 
 def run(command: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -62,11 +63,67 @@ def environment_python(root: Path) -> Path:
     return root / "bin" / "python"
 
 
-def ensure_environment(root: Path) -> Path:
+def python_version(command: list[str]) -> tuple[int, int] | None:
+    result = subprocess.run(
+        [*command, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        major, minor = result.stdout.strip().split(".", 1)
+        return int(major), int(minor)
+    except (ValueError, TypeError):
+        return None
+
+
+def supported_python(version: tuple[int, int] | None) -> bool:
+    return version is not None and MIN_PYTHON <= version < MAX_PYTHON
+
+
+def select_base_python(requested: Path | None) -> list[str]:
+    candidates: list[list[str]] = []
+    if requested is not None:
+        candidates.append([str(requested.expanduser().resolve())])
+    else:
+        candidates.append([sys.executable])
+        launcher = shutil.which("py") if os.name == "nt" else None
+        if launcher:
+            candidates.extend([[launcher, "-3.12"], [launcher, "-3.11"]])
+
+    rejected: list[str] = []
+    for candidate in candidates:
+        version = python_version(candidate)
+        if supported_python(version):
+            print(f"Using Python {version[0]}.{version[1]} for isolated environments: {' '.join(candidate)}")
+            return candidate
+        version_text = "unavailable" if version is None else f"{version[0]}.{version[1]}"
+        rejected.append(f"{' '.join(candidate)} ({version_text})")
+
+    supported = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}-{MAX_PYTHON[0]}.{MAX_PYTHON[1] - 1}"
+    raise RuntimeError(
+        f"Kokoro requires a supported Python runtime ({supported}); rejected: {', '.join(rejected)}. "
+        "Install Python 3.11 or 3.12, or pass --python PATH."
+    )
+
+
+def ensure_environment(root: Path, base_python: list[str]) -> Path:
     python = environment_python(root)
+    if python.is_file() and supported_python(python_version([str(python)])):
+        return python
+    if root.exists():
+        print(f"Replacing incompatible isolated environment: {root}")
+        if root.is_symlink():
+            root.unlink()
+        else:
+            shutil.rmtree(root)
     if not python.is_file():
         print(f"Creating isolated environment: {root}")
-        venv.EnvBuilder(with_pip=True, clear=False).create(str(root))
+        run([*base_python, "-m", "venv", str(root)])
+    if not python.is_file():
+        raise RuntimeError(f"Could not create isolated environment: {root}")
     return python
 
 
@@ -230,9 +287,9 @@ def provider_check(python: Path, label: str) -> None:
     print(f"{label} providers: {providers}")
 
 
-def setup_directml(voice_root: Path, model: Path) -> None:
+def setup_directml(voice_root: Path, model: Path, base_python: list[str]) -> None:
     environment = voice_root / ".dml-venv"
-    python = ensure_environment(environment)
+    python = ensure_environment(environment, base_python)
     install_requirements(python, SKILL_ROOT / "requirements-directml.txt")
     # The fork inherits the CPU ORT dependency from upstream. Keep the
     # DirectML wheel as the only ONNX Runtime implementation in this env.
@@ -270,9 +327,9 @@ def setup_directml(voice_root: Path, model: Path) -> None:
     provider_check(python, "DirectML")
 
 
-def setup_cuda(voice_root: Path) -> None:
+def setup_cuda(voice_root: Path, base_python: list[str]) -> None:
     environment = voice_root / ".cuda-venv"
-    python = ensure_environment(environment)
+    python = ensure_environment(environment, base_python)
     install_requirements(python, SKILL_ROOT / "requirements-cuda.txt")
     provider_check(python, "CUDA")
     print("CUDA provider is configured but untested on this machine; use provider-cpu if it fails to initialize.")
@@ -284,12 +341,18 @@ def main() -> int:
     parser.add_argument("--enable", action="store_true", help="enable voice after setup")
     parser.add_argument("--force", action="store_true", help="back up and replace a different existing speak.py")
     parser.add_argument("--no-orb", action="store_true", help="skip copying/installing the Strand Orb")
+    parser.add_argument(
+        "--python",
+        type=Path,
+        help="base Python 3.11 or 3.12 executable for isolated environments",
+    )
     provider_group = parser.add_mutually_exclusive_group()
     provider_group.add_argument("--cuda", action="store_true", help="install the untested NVIDIA CUDA 12.x path")
     provider_group.add_argument("--directml", action="store_true", help="install the experimental Intel/DirectML path")
     args = parser.parse_args()
 
     project_root = args.project_root.resolve()
+    base_python = select_base_python(args.python)
     voice_root = project_root / ".codex-voice"
     voice_root.mkdir(parents=True, exist_ok=True)
     write_default(voice_root / ".gitignore", VOICE_GITIGNORE)
@@ -301,16 +364,16 @@ def main() -> int:
     download(VOICES_URL, voices)
 
     cpu_environment = voice_root / ".venv"
-    cpu_python = ensure_environment(cpu_environment)
+    cpu_python = ensure_environment(cpu_environment, base_python)
     install_requirements(cpu_python, SKILL_ROOT / "requirements-cpu.txt")
     provider_check(cpu_python, "CPU")
 
     provider = "cpu"
     if args.cuda:
-        setup_cuda(voice_root)
+        setup_cuda(voice_root, base_python)
         provider = "cuda"
     elif args.directml:
-        setup_directml(voice_root, model)
+        setup_directml(voice_root, model, base_python)
         provider = "directml"
 
     (voice_root / "gpu_patch").mkdir(exist_ok=True)
@@ -327,6 +390,7 @@ def main() -> int:
     install_start_script(voice_root)
 
     print(f"Codex AI Presence setup complete in {project_root}")
+    print(f"Base Python: {' '.join(base_python)}")
     print(f"Provider: {provider}")
     print(f"Enable/control: python {Path.home() / '.codex' / 'skills' / 'codex-voice' / 'scripts' / 'toggle.py'} status")
     return 0
