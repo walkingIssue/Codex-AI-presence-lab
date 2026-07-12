@@ -19,7 +19,6 @@ REQUIRED_FILES = (
     "scripts/configuration.py",
     "scripts/configure.py",
     "scripts/activity.py",
-    "scripts/app_server_bridge.py",
     "scripts/setup.py",
     "scripts/session_scope.py",
     "scripts/speak.py",
@@ -71,9 +70,7 @@ def main() -> int:
 
     sys.path.insert(0, str(skill / "scripts"))
     from activity import classify_activity
-    from app_server_bridge import activity_for_item
-    from setup import install_activity_script, install_app_server_bridge, install_runtime_manifest
-    from speak import SpeechChunker
+    from setup import install_activity_script, install_runtime_manifest
     from uninstall import read_runtime_manifest
 
     manifest_text = (skill / "RUNTIME-MANIFEST.md").read_text(encoding="utf-8")
@@ -94,16 +91,6 @@ def main() -> int:
             raise SystemExit(f"Activity classification failed: {record!r}")
     if classify_activity({"type": "response_item", "payload": {"type": "reasoning"}}) is not None:
         raise SystemExit("Hidden reasoning content was incorrectly exposed as an activity event")
-    if activity_for_item({"type": "commandExecution"}) != "cli":
-        raise SystemExit("App-server command execution was not classified as local CLI activity")
-    if activity_for_item({"type": "mcpToolCall"}) != "tool":
-        raise SystemExit("App-server MCP activity was not classified as tool activity")
-    chunker = SpeechChunker(min_chars=10, max_chars=80)
-    streamed_chunks = chunker.add("The first sentence arrives in deltas.")
-    streamed_chunks.extend(chunker.add(" The second sentence is still coming"))
-    streamed_chunks.extend(chunker.finish())
-    if len(streamed_chunks) != 2 or not streamed_chunks[0].startswith("The first sentence"):
-        raise SystemExit(f"Incremental speech chunking failed: {streamed_chunks!r}")
     if (skill / "html").exists() or (skill / "media").exists():
         raise SystemExit("Release skill still contains showcase media")
 
@@ -115,17 +102,12 @@ def main() -> int:
         scripts.mkdir(parents=True)
         voice_root.mkdir()
         install_activity_script(voice_root)
-        install_app_server_bridge(voice_root)
         install_runtime_manifest(voice_root)
         if not (voice_root / "activity.py").is_file():
             raise SystemExit("Setup did not install the activity bridge into the project runtime")
-        if not (voice_root / "app_server_bridge.py").is_file():
-            raise SystemExit("Setup did not install the app-server bridge into the project runtime")
         manifest_entries = read_runtime_manifest(voice_root)
         if manifest_entries is None or ".codex-voice/activity.py" not in manifest_entries:
             raise SystemExit("Setup did not install a readable runtime manifest")
-        if ".codex-voice/app_server_bridge.py" not in manifest_entries:
-            raise SystemExit("Setup did not register the app-server bridge in the runtime manifest")
         for path in (skill / "scripts").glob("*.py"):
             shutil.copy2(path, scripts / path.name)
         (voice_root / "sessions.json").write_text(
@@ -183,48 +165,6 @@ def main() -> int:
             raise SystemExit("toggle status omitted commentary volume")
         run([sys.executable, str(configure), "set", "--speed", "3"], project, expect=2)
         run([sys.executable, str(skill / "scripts" / "setup.py"), "--help"], project)
-
-        fake_upstream = root / "fake_app_server.py"
-        fake_upstream.write_text(
-            """
-import json
-import sys
-
-for line in sys.stdin:
-    request = json.loads(line)
-    print(json.dumps({\"id\": request.get(\"id\"), \"result\": {\"ok\": True}}), flush=True)
-    print(json.dumps({\"method\": \"item/agentMessage/delta\", \"params\": {\"threadId\": \"thread-1\", \"turnId\": \"turn-1\", \"itemId\": \"item-1\", \"delta\": \"hello\"}}), flush=True)
-    print(json.dumps({\"method\": \"turn/completed\", \"params\": {\"threadId\": \"thread-1\", \"turn\": {\"id\": \"turn-1\"}}}), flush=True)
-    break
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        upstream_command = f'"{sys.executable}" "{fake_upstream}"'
-        bridge_result = subprocess.run(
-            [
-                sys.executable,
-                str(skill / "scripts" / "app_server_bridge.py"),
-                "--project-root",
-                str(project),
-                "--upstream-command",
-                upstream_command,
-                "--no-voice",
-                "--no-activity",
-            ],
-            input=json.dumps({"id": 1, "method": "initialize", "params": {}}) + "\n",
-            cwd=project,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if bridge_result.returncode != 0:
-            raise SystemExit(f"App-server bridge smoke failed: {bridge_result.stderr}")
-        forwarded = [json.loads(line) for line in bridge_result.stdout.splitlines() if line.strip()]
-        if len(forwarded) != 3 or forwarded[0].get("id") != 1:
-            raise SystemExit(f"App-server bridge did not preserve upstream messages: {forwarded!r}")
-        if forwarded[1].get("method") != "item/agentMessage/delta":
-            raise SystemExit("App-server bridge did not forward agent message deltas")
 
         hooks_dir = project / ".codex" / "hooks"
         hooks_dir.mkdir(parents=True)

@@ -167,23 +167,6 @@ keeps activity separate from audio amplitude and suppresses activity tint
 while speech is active. Explicit `skill`, `waiting`, and `error` states are
 available to future adapters through the same bridge.
 
-## App-server response-delta experiment
-
-The lab now includes `scripts/app_server_bridge.py`, an experimental stdio
-adapter for clients that speak the Codex app-server protocol. It launches the
-local app-server as a child process, forwards client and server lines without
-rewriting them, and observes only safe lifecycle fields. Visible
-`item/agentMessage/delta` notifications are queued into a separate
-incremental Kokoro worker; sentence-sized chunks share one `ffplay` pipe and
-one Orb playback timeline, so the bridge never waits for synthesis before
-forwarding protocol traffic.
-
-The bridge was verified locally against the installed app-server: initialize,
-thread start, and a no-tools turn completed through the proxy. The DirectML
-runtime produced streamed audio from the deltas and the existing Orb received
-the playback timeline. This remains a lab-only stdio path for a custom client;
-the packaged Codex Desktop client is not automatically redirected through it.
-
 ## Representation direction
 
 The strongest direction is presence without a literal face. Preserve the

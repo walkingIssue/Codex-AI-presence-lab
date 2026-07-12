@@ -39,8 +39,7 @@ Acceptance target: two simultaneous sessions in one project can use different vo
 
 ## Latency and runtime
 
-- Harden the app-server response-delta bridge with a WebSocket transport,
-  reconnect handling, and first-audio latency diagnostics.
+- Bridge app-server response deltas directly into the watcher for lower-latency speech handoff.
 - Keep one persistent Kokoro worker warm between responses.
 - Add provider readiness diagnostics and a performance comparison for CPU, NVIDIA CUDA, and Intel Arc DirectML.
 - Add recovery and migration tooling for existing project-local installations.

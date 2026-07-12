@@ -179,23 +179,3 @@ commentary-volume ratio; never speak hidden reasoning or raw tool output.
 The watcher uses the persistent worker and the provider selected in the
 project's `.codex-voice/provider` marker. Keep the base model and voice bundle
 out of source control; setup downloads them locally.
-
-## App-server streaming bridge
-
-The integration also includes an experimental transparent Codex app-server bridge for
-clients that connect to Codex through `app-server`. It forwards the newline-
-delimited protocol unchanged and observes only visible assistant message
-deltas for incremental speech. Lifecycle notifications drive the existing
-coarse Orb activity states; hidden reasoning and raw tool payloads are never
-sent to the voice or renderer.
-
-Run it from a client that speaks the app-server stdio protocol:
-
-```powershell
-python .codex-voice/app_server_bridge.py --project-root (Get-Location)
-```
-
-The bridge launches `codex app-server --listen stdio://` by default. Use
-`--upstream-command` for a pinned Codex executable or a test server. This is a
-host-adapter path for a custom client; the packaged Codex Desktop UI does not
-automatically route its private connection through the bridge.

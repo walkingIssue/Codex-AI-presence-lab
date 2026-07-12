@@ -283,11 +283,6 @@ def install_activity_script(voice_root: Path) -> None:
     shutil.copy2(SCRIPT_ROOT / "activity.py", voice_root / "activity.py")
 
 
-def install_app_server_bridge(voice_root: Path) -> None:
-    """Expose the transparent Codex app-server bridge from the project runtime."""
-    shutil.copy2(SCRIPT_ROOT / "app_server_bridge.py", voice_root / "app_server_bridge.py")
-
-
 def install_runtime_manifest(voice_root: Path) -> None:
     """Copy the tracked ownership inventory into the project runtime."""
     shutil.copy2(SKILL_ROOT / RUNTIME_MANIFEST_NAME, voice_root / RUNTIME_MANIFEST_NAME)
@@ -406,7 +401,6 @@ def main() -> int:
     install_orb(voice_root, args.no_orb)
     install_start_script(voice_root)
     install_activity_script(voice_root)
-    install_app_server_bridge(voice_root)
     install_runtime_manifest(voice_root)
 
     print(f"Codex AI Presence setup complete in {project_root}")

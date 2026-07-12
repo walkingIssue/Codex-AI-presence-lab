@@ -10,11 +10,10 @@ This is intentionally kept outside the distributable skill. The detailed backlog
 - Runtime configuration for voice, speed, volume, commentary volume, progress, Orb, and provider.
 - Audio-synchronized Strand Orb playback.
 - Clean skill projection and Windows E2E gate.
-- Experimental stdio app-server bridge with incremental Kokoro speech deltas.
 
 ## Next experiments
 
-- WebSocket/custom-client adapter on top of the validated stdio bridge.
+- App-server response-delta bridge for lower-latency text-to-speech handoff.
 - Optional [per-session configuration profiles](WISHLIST.md#per-session-configuration-profiles) without changing the project default.
 - Movable, persistently positioned companion window with an explicit move mode.
 - Semantic Orb states for thinking, tool activity, skill execution, and local CLI work.

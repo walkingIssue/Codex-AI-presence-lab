@@ -25,7 +25,6 @@ predate a later file.
 | Runtime root | `.codex-voice/` | Uninstaller removes the complete directory |
 | Runtime manifest | `.codex-voice/RUNTIME-MANIFEST.md` | Runtime-root cleanup |
 | Activity bridge | `.codex-voice/activity.py` | Runtime-root cleanup |
-| App-server bridge | `.codex-voice/app_server_bridge.py` | Runtime-root cleanup |
 | Voice lifecycle wrapper | `.codex-voice/start_voice.ps1` | Runtime-root cleanup |
 | Configuration markers | `.codex-voice/{voice,mode,speed,volume,commentary-volume,provider,progress,enabled,orb.enabled}` | Runtime-root cleanup |
 | Session scope | `.codex-voice/sessions.json` | Runtime-root cleanup |
@@ -45,4 +44,3 @@ predate a later file.
 | --- | --- | --- |
 | `2026-07-12-activity-state` | Added rollout activity bridge, Orb activity states, and project-local `activity.py` | All new files remain inside `.codex-voice`; no new external cleanup path |
 | `2026-07-12-activity-node` | Added a state-colored center node with a damped activity-swap bounce | No new artifact; renderer update remains inside `.codex-voice/orb/` |
-| `2026-07-12-app-server-stream` | Added the transparent app-server bridge and incremental Kokoro stream worker | Bridge and worker remain inside the project-local runtime; full runtime cleanup removes both |
