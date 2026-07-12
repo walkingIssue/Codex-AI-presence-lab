@@ -184,6 +184,13 @@ runtime produced streamed audio from the deltas and the existing Orb received
 the playback timeline. This remains a lab-only stdio path for a custom client;
 the packaged Codex Desktop client is not automatically redirected through it.
 
+The companion `scripts/app_server_launcher.py` adds the stock-client path. It
+starts a loopback WebSocket app-server, puts a standard-library WebSocket proxy
+in front of it, and launches the Codex TUI with `--remote` pointed at the
+proxy. Frames are relayed unchanged in both directions; only complete
+server-to-client text messages are decoded for the existing notification
+interceptor. `scripts/launch_codex.ps1` is the Windows convenience wrapper.
+
 ## Representation direction
 
 The strongest direction is presence without a literal face. Preserve the

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,8 @@ REQUIRED_FILES = (
     "scripts/configure.py",
     "scripts/activity.py",
     "scripts/app_server_bridge.py",
+    "scripts/app_server_launcher.py",
+    "scripts/launch_codex.ps1",
     "scripts/setup.py",
     "scripts/session_scope.py",
     "scripts/speak.py",
@@ -72,7 +75,13 @@ def main() -> int:
     sys.path.insert(0, str(skill / "scripts"))
     from activity import classify_activity
     from app_server_bridge import activity_for_item
-    from setup import install_activity_script, install_app_server_bridge, install_runtime_manifest
+    from app_server_launcher import bridge_environment, client_arguments, websocket_accept
+    from setup import (
+        install_activity_script,
+        install_app_server_bridge,
+        install_app_server_launcher,
+        install_runtime_manifest,
+    )
     from speak import SpeechChunker
     from uninstall import read_runtime_manifest
 
@@ -98,6 +107,33 @@ def main() -> int:
         raise SystemExit("App-server command execution was not classified as local CLI activity")
     if activity_for_item({"type": "mcpToolCall"}) != "tool":
         raise SystemExit("App-server MCP activity was not classified as tool activity")
+    if client_arguments("codex --remote {remote}", "codex", "ws://127.0.0.1:1234") != [
+        "codex",
+        "--remote",
+        "ws://127.0.0.1:1234",
+    ]:
+        raise SystemExit("Stock Codex client launcher arguments were not expanded safely")
+    if os.name == "nt":
+        windows_client = client_arguments(
+            '"{codex}" resume --remote {remote} thread-id',
+            r"C:\Program Files\OpenAI\Codex\codex.exe",
+            "ws://127.0.0.1:1234",
+        )
+        if windows_client != [
+            r"C:\Program Files\OpenAI\Codex\codex.exe",
+            "resume",
+            "--remote",
+            "ws://127.0.0.1:1234",
+            "thread-id",
+        ]:
+            raise SystemExit("Windows Codex client path was not preserved")
+    if bridge_environment().get("CODEX_TTS_DISABLE") != "1":
+        raise SystemExit("Bridged Codex processes did not disable the duplicate Stop hook")
+    manifest_text = (skill / "RUNTIME-MANIFEST.md").read_text(encoding="utf-8")
+    if ".codex-voice/bridge.active" not in manifest_text:
+        raise SystemExit("Bridge activity marker was not registered in the runtime manifest")
+    if websocket_accept("dGhlIHNhbXBsZSBub25jZQ==") != "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=":
+        raise SystemExit("WebSocket handshake accept key calculation failed")
     chunker = SpeechChunker(min_chars=10, max_chars=80)
     streamed_chunks = chunker.add("The first sentence arrives in deltas.")
     streamed_chunks.extend(chunker.add(" The second sentence is still coming"))
@@ -116,16 +152,22 @@ def main() -> int:
         voice_root.mkdir()
         install_activity_script(voice_root)
         install_app_server_bridge(voice_root)
+        install_app_server_launcher(voice_root)
         install_runtime_manifest(voice_root)
         if not (voice_root / "activity.py").is_file():
             raise SystemExit("Setup did not install the activity bridge into the project runtime")
         if not (voice_root / "app_server_bridge.py").is_file():
             raise SystemExit("Setup did not install the app-server bridge into the project runtime")
+        if not (voice_root / "app_server_launcher.py").is_file() or not (voice_root / "launch_codex.ps1").is_file():
+            raise SystemExit("Setup did not install the stock-client launcher into the project runtime")
         manifest_entries = read_runtime_manifest(voice_root)
         if manifest_entries is None or ".codex-voice/activity.py" not in manifest_entries:
             raise SystemExit("Setup did not install a readable runtime manifest")
         if ".codex-voice/app_server_bridge.py" not in manifest_entries:
             raise SystemExit("Setup did not register the app-server bridge in the runtime manifest")
+        for required in (".codex-voice/app_server_launcher.py", ".codex-voice/launch_codex.ps1"):
+            if required not in manifest_entries:
+                raise SystemExit(f"Setup did not register {required} in the runtime manifest")
         for path in (skill / "scripts").glob("*.py"):
             shutil.copy2(path, scripts / path.name)
         (voice_root / "sessions.json").write_text(
@@ -183,6 +225,7 @@ def main() -> int:
             raise SystemExit("toggle status omitted commentary volume")
         run([sys.executable, str(configure), "set", "--speed", "3"], project, expect=2)
         run([sys.executable, str(skill / "scripts" / "setup.py"), "--help"], project)
+        run([sys.executable, str(skill / "scripts" / "app_server_launcher.py"), "--help"], project)
 
         fake_upstream = root / "fake_app_server.py"
         fake_upstream.write_text(

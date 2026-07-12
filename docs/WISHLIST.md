@@ -39,8 +39,8 @@ Acceptance target: two simultaneous sessions in one project can use different vo
 
 ## Latency and runtime
 
-- Harden the app-server response-delta bridge with a WebSocket transport,
-  reconnect handling, and first-audio latency diagnostics.
+- Harden the app-server response-delta launcher with reconnect handling,
+  first-audio latency diagnostics, and Linux/macOS client validation.
 - Keep one persistent Kokoro worker warm between responses.
 - Add provider readiness diagnostics and a performance comparison for CPU, NVIDIA CUDA, and Intel Arc DirectML.
 - Add recovery and migration tooling for existing project-local installations.
@@ -89,6 +89,14 @@ Additional design direction:
 - Prefer one strong motion idea per state; avoid stacking every effect at once.
 - Keep all of these parameters theme-configurable: breathing rate, asymmetry,
   inner pulse, cadence sensitivity, afterglow, and transition softness.
+- Explore the current golden activity animation as a palette direction: let
+  cool blue states blend into restrained gold during active transitions instead
+  of treating the warm state as an isolated color.
+- Increase the center dot's size and give it its own state-aware animation,
+  including a more pronounced pulse, scale response, and transition behavior.
+- Make each activity state geometrically more legible through stronger,
+  deliberately distinct motion signatures while keeping speech cadence as the
+  dominant playback response.
 
 ## Companion window and placement
 

@@ -14,7 +14,8 @@ This is intentionally kept outside the distributable skill. The detailed backlog
 
 ## Next experiments
 
-- WebSocket/custom-client adapter on top of the validated stdio bridge.
+- Reconnect handling, diagnostics, and wider client/platform validation for the
+  validated stock-client WebSocket launcher.
 - Optional [per-session configuration profiles](WISHLIST.md#per-session-configuration-profiles) without changing the project default.
 - Movable, persistently positioned companion window with an explicit move mode.
 - Semantic Orb states for thinking, tool activity, skill execution, and local CLI work.

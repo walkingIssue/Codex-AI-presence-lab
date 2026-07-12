@@ -25,6 +25,7 @@ VOICES_PATH = VOICE_ROOT / "voices-v1.0.bin"
 ENABLED_MARKER = VOICE_ROOT / "enabled"
 LOG_PATH = VOICE_ROOT / "hook.log"
 WATCHER_PID_PATH = VOICE_ROOT / "watcher.pid"
+BRIDGE_ACTIVE_PATH = VOICE_ROOT / "bridge.active"
 VOICE_CONFIG_PATH = VOICE_ROOT / "voice"
 MODE_CONFIG_PATH = VOICE_ROOT / "mode"
 SPEED_CONFIG_PATH = VOICE_ROOT / "speed"
@@ -88,6 +89,19 @@ def transcript_watcher_is_active() -> bool:
     except OSError:
         return False
     return True
+
+
+def app_server_bridge_is_active() -> bool:
+    """Detect a launcher even when the hook is started externally."""
+
+    try:
+        pid = int(BRIDGE_ACTIVE_PATH.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return False
+    # The launcher validates stale PIDs when it starts. The hook can be
+    # launched in a restricted process context where process-table queries
+    # are denied, so marker presence is the reliable active-session signal.
+    return pid > 0
 
 
 def configured_voice() -> str:
@@ -891,6 +905,9 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
     hook_log("invoked")
     if os.environ.get("CODEX_TTS_DISABLE"):
         hook_log("skipped: CODEX_TTS_DISABLE")
+        return done()
+    if app_server_bridge_is_active():
+        hook_log("skipped: app-server bridge active")
         return done()
     if transcript_watcher_is_active():
         hook_log("skipped: desktop transcript watcher active")

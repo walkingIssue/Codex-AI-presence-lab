@@ -199,3 +199,37 @@ The bridge launches `codex app-server --listen stdio://` by default. Use
 `--upstream-command` for a pinned Codex executable or a test server. This is a
 host-adapter path for a custom client; the packaged Codex Desktop UI does not
 automatically route its private connection through the bridge.
+
+The stock-client launcher disables the project voice Stop hook only inside the
+Codex client and app-server child processes. The bridge's own persistent Kokoro
+worker remains enabled, so streamed responses are spoken once rather than once
+per delta stream plus once again at turn completion.
+
+While the launcher is alive it also owns a PID-checked
+`.codex-voice/bridge.active` marker. The managed hook checks that marker as a
+fallback for hook invocations started outside the launcher child environment;
+stale markers are ignored when their owner process is gone.
+
+## Launch the stock Codex client through the bridge
+
+Use the project-local launcher when you want the normal Codex TUI to connect
+through the voice bridge:
+
+```powershell
+& .codex-voice\launch_codex.ps1
+```
+
+The launcher starts a local WebSocket app-server, places a transparent proxy
+in front of it, and starts the stock Codex client with `--remote`. Server
+messages still reach the client unchanged while visible assistant deltas are
+sent to Kokoro as they arrive. The launcher uses loopback-only endpoints and
+does not expose the app-server beyond the local machine.
+
+Pass extra client or launcher options after the wrapper, for example:
+
+```powershell
+& .codex-voice\launch_codex.ps1 --no-activity
+```
+
+This starts a new client process through the bridge; it does not redirect an
+already-running Codex Desktop window.

@@ -288,6 +288,12 @@ def install_app_server_bridge(voice_root: Path) -> None:
     shutil.copy2(SCRIPT_ROOT / "app_server_bridge.py", voice_root / "app_server_bridge.py")
 
 
+def install_app_server_launcher(voice_root: Path) -> None:
+    """Expose the stock-client WebSocket launcher from the project runtime."""
+    shutil.copy2(SCRIPT_ROOT / "app_server_launcher.py", voice_root / "app_server_launcher.py")
+    shutil.copy2(SCRIPT_ROOT / "launch_codex.ps1", voice_root / "launch_codex.ps1")
+
+
 def install_runtime_manifest(voice_root: Path) -> None:
     """Copy the tracked ownership inventory into the project runtime."""
     shutil.copy2(SKILL_ROOT / RUNTIME_MANIFEST_NAME, voice_root / RUNTIME_MANIFEST_NAME)
@@ -407,6 +413,7 @@ def main() -> int:
     install_start_script(voice_root)
     install_activity_script(voice_root)
     install_app_server_bridge(voice_root)
+    install_app_server_launcher(voice_root)
     install_runtime_manifest(voice_root)
 
     print(f"Codex AI Presence setup complete in {project_root}")
