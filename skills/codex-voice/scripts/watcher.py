@@ -139,16 +139,6 @@ def progress_enabled(voice_root: Path) -> bool:
     return value in {"1", "true", "on", "enabled"}
 
 
-def app_server_bridge_active(voice_root: Path) -> bool:
-    """Let the app-server bridge own speech while it is running."""
-
-    try:
-        pid = int(voice_root.joinpath("bridge.active").read_text(encoding="ascii").strip())
-    except (OSError, ValueError):
-        return False
-    return pid > 0
-
-
 @dataclass
 class ActivityLease:
     state: str
@@ -493,25 +483,12 @@ def main() -> int:
     seen: set[tuple[str, str, str, str]] = set()
     seen_activity: set[tuple[str, str, str, str, str]] = set()
     worker = TTSWorker(project_root, voice_root)
-    bridge_owns_speech = app_server_bridge_active(voice_root)
     activity_tracker = ActivityTracker()
     activity_tracker.reset(time.monotonic())
-    if bridge_owns_speech:
-        log(voice_root, "speech delegated to active app-server bridge")
-    else:
-        worker.start()
+    worker.start()
 
     try:
         while marker_enabled(voice_root):
-            bridge_active = app_server_bridge_active(voice_root)
-            if bridge_active != bridge_owns_speech:
-                bridge_owns_speech = bridge_active
-                if bridge_owns_speech:
-                    worker.close()
-                    log(voice_root, "speech delegated to active app-server bridge")
-                else:
-                    worker.start()
-                    log(voice_root, "speech returned to rollout watcher")
             current_scope_mtime = scope_mtime(voice_root)
             if current_scope_mtime != scope_state_mtime:
                 scope_state = load_state(voice_root)
@@ -576,9 +553,6 @@ def main() -> int:
                     key = (str(path), str(record.get("timestamp")), "commentary", commentary)
                     if key not in seen:
                         seen.add(key)
-                        if bridge_owns_speech:
-                            log(voice_root, "skipping commentary: app-server bridge owns speech")
-                            continue
                         commentary_ratio = configured_commentary_volume(voice_root) / 100
                         volume = round(configured_volume(voice_root) * commentary_ratio)
                         log(voice_root, f"speaking visible commentary at {volume}%: {len(commentary)} characters")
@@ -599,9 +573,6 @@ def main() -> int:
                 if key in seen:
                     continue
                 seen.add(key)
-                if bridge_owns_speech:
-                    log(voice_root, "skipping final answer: app-server bridge owns speech")
-                    continue
                 log(voice_root, f"speaking final answer: {len(message)} characters")
                 speak(project_root, voice_root, message, worker=worker)
             activity_tracker.tick(time.monotonic())
