@@ -1,0 +1,8 @@
+{
+  "schema": "codex-ai-presence/avatar/v0.1",
+  "id": "example-avatar",
+  "name": "Example Avatar",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "capabilities": ["activity", "audio", "move-mode"]
+}

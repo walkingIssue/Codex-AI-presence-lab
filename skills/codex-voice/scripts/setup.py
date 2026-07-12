@@ -38,6 +38,9 @@ kokoro-v1.0*.onnx
 voices-v1.0.bin
 gpu_patch/*.onnx
 sessions.json
+avatar-selection.json
+avatar-state.json
+avatar-state-status.json
 """
 ORB_FILES = (
     "index.html",
@@ -283,6 +286,16 @@ def install_activity_script(voice_root: Path) -> None:
     shutil.copy2(SCRIPT_ROOT / "activity.py", voice_root / "activity.py")
 
 
+def install_avatar_script(voice_root: Path) -> None:
+    """Expose avatar bundle management from the project runtime."""
+    shutil.copy2(SCRIPT_ROOT / "avatar.py", voice_root / "avatar.py")
+
+
+def install_avatar_state_script(voice_root: Path) -> None:
+    """Expose the generic model-agnostic avatar state writer."""
+    shutil.copy2(SCRIPT_ROOT / "avatar_state.py", voice_root / "avatar_state.py")
+
+
 def install_runtime_manifest(voice_root: Path) -> None:
     """Copy the tracked ownership inventory into the project runtime."""
     shutil.copy2(SKILL_ROOT / RUNTIME_MANIFEST_NAME, voice_root / RUNTIME_MANIFEST_NAME)
@@ -401,6 +414,8 @@ def main() -> int:
     install_orb(voice_root, args.no_orb)
     install_start_script(voice_root)
     install_activity_script(voice_root)
+    install_avatar_script(voice_root)
+    install_avatar_state_script(voice_root)
     install_runtime_manifest(voice_root)
 
     print(f"Codex AI Presence setup complete in {project_root}")

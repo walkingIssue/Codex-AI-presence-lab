@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/walkingIssue/Codex-AI-presence/blob/main/skills/codex-voice/references/avatar-state.schema.json",
+  "title": "Codex AI Presence avatar state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "type", "avatar_id", "source", "scope", "revision", "actions", "issued_at"],
+  "properties": {
+    "schema": { "const": "codex-ai-presence/avatar-state/v0.1" },
+    "type": { "const": "avatar-state" },
+    "avatar_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "source": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,80}$" },
+    "scope": { "const": "project" },
+    "revision": { "type": "integer", "minimum": 0 },
+    "actions": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" }
+    },
+    "issued_at": { "type": "string", "format": "date-time" }
+  }
+}

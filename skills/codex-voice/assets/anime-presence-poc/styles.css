@@ -1,0 +1,267 @@
+:root {
+  --accent: #70e8ff;
+  --accent-soft: #b9f5ff;
+  --activity-energy: 0.2;
+  --head-x: 0px;
+  --head-y: 0px;
+  --head-tilt: 0deg;
+  --eye-x: 0px;
+  --eye-y: 0px;
+  --blink: 0;
+  --mouth-open: 0.05;
+  --body-tilt: 0deg;
+  --body-x: 0px;
+  --body-y: 0px;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  user-select: none;
+  font: 10px/1.2 "Segoe UI", sans-serif;
+}
+
+body.move-mode {
+  pointer-events: auto;
+  cursor: grab;
+}
+
+body.move-mode.dragging {
+  cursor: grabbing;
+}
+
+#avatar {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 0 calc(9px + 18px * var(--activity-energy)) var(--accent));
+}
+
+#avatar-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#character {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  transform: translate(var(--body-x), var(--body-y)) rotate(var(--body-tilt));
+  transition: transform 180ms ease-out;
+}
+
+#head {
+  transform-box: fill-box;
+  transform-origin: center 64%;
+  transform: translate(var(--head-x), var(--head-y)) rotate(var(--head-tilt));
+  transition: transform 160ms ease-out;
+}
+
+#eyes {
+  transform: translate(var(--eye-x), var(--eye-y));
+  transition: transform 120ms ease-out;
+}
+
+.presence-halo {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  opacity: calc(0.18 + var(--activity-energy) * 0.45);
+  stroke-dasharray: 3 13;
+  animation: halo-drift 12s linear infinite;
+}
+
+.shoulder-shadow {
+  fill: #11182d;
+  opacity: 0.92;
+}
+
+.top {
+  fill: url(#top-gradient);
+  stroke: #d86aa7;
+  stroke-width: 2;
+}
+
+.bust-left,
+.bust-right {
+  fill: #542b63;
+  opacity: 0.88;
+}
+
+.top-highlight {
+  fill: none;
+  stroke: #d77caf;
+  stroke-width: 4;
+  opacity: 0.5;
+}
+
+.collar {
+  fill: #f4c5dc;
+  stroke: #8f4b82;
+  stroke-width: 2;
+}
+
+.neck {
+  fill: url(#skin-gradient);
+}
+
+.ribbon {
+  fill: #cd5d9f;
+  stroke: #f6acd1;
+  stroke-width: 2;
+}
+
+.ribbon-gem {
+  fill: var(--accent);
+  stroke: #e9ffff;
+  stroke-width: 2;
+  filter: url(#soft-glow);
+}
+
+.hair-back,
+.hair-front,
+.hair-lock {
+  fill: url(#hair-gradient);
+  stroke: #382d68;
+  stroke-width: 3;
+}
+
+.hair-front {
+  opacity: 0.96;
+}
+
+.hair-lock {
+  transform-box: fill-box;
+  transform-origin: top center;
+  animation: hair-sway 3.8s ease-in-out infinite alternate;
+}
+
+.right-lock {
+  animation-delay: -1.4s;
+}
+
+.hair-shine {
+  fill: #f4c3ff;
+  opacity: 0.26;
+}
+
+.face {
+  fill: url(#skin-gradient);
+  stroke: #b66e91;
+  stroke-width: 2;
+}
+
+.ear {
+  fill: #efb6c4;
+  stroke: #b66e91;
+  stroke-width: 2;
+}
+
+.eye-white {
+  fill: #fffaff;
+  stroke: #392d68;
+  stroke-width: 4;
+}
+
+.iris {
+  fill: url(#eye-gradient);
+  stroke: #34275e;
+  stroke-width: 2;
+}
+
+.pupil {
+  fill: #171531;
+}
+
+.eye-light {
+  fill: white;
+  opacity: 0.9;
+}
+
+.lash {
+  fill: none;
+  stroke: #312653;
+  stroke-width: 7;
+  stroke-linecap: round;
+}
+
+.lid {
+  fill: #f6c5c9;
+  stroke: #9d587d;
+  stroke-width: 3;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleY(var(--blink));
+}
+
+.nose {
+  fill: none;
+  stroke: #b66e91;
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.7;
+}
+
+#mouth {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleY(var(--mouth-open));
+}
+
+.mouth-line {
+  fill: none;
+  stroke: #873c6e;
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+
+.mouth-open {
+  fill: #5b234c;
+  opacity: 0.86;
+}
+
+.mouth-highlight {
+  fill: none;
+  stroke: #ffbadc;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.status {
+  position: absolute;
+  right: 12%;
+  bottom: 8%;
+  color: var(--accent-soft);
+  opacity: 0.55;
+  letter-spacing: 0.2em;
+  text-shadow: 0 0 8px var(--accent);
+}
+
+body.move-mode #avatar {
+  filter: drop-shadow(0 0 20px #fff) drop-shadow(0 0 28px var(--accent));
+}
+
+@keyframes halo-drift {
+  to {
+    stroke-dashoffset: -160;
+  }
+}
+
+@keyframes hair-sway {
+  from {
+    transform: rotate(-1deg);
+  }
+  to {
+    transform: rotate(1.5deg);
+  }
+}

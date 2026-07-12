@@ -1,6 +1,6 @@
 ---
 name: codex-voice
-description: Set up, uninstall, and control project-local Kokoro voice output and the optional WebGL Strand Orb for Codex, with full voice, speed, volume, commentary-volume, playback, scope, progress, and provider configuration. Use when the user asks to enable, disable, configure, install, clean up, troubleshoot, or speak Codex responses aloud, including CPU, NVIDIA CUDA, or Intel DirectML provider selection.
+description: Set up, uninstall, and control project-local Kokoro voice output, the optional WebGL Strand Orb, and experimental custom avatar renderers for Codex, with full voice, speed, volume, commentary-volume, playback, scope, progress, and provider configuration. Use when the user asks to enable, disable, configure, install, clean up, troubleshoot, speak Codex responses aloud, or define a custom presence renderer, including CPU, NVIDIA CUDA, or Intel DirectML provider selection.
 ---
 
 # Codex AI Presence
@@ -133,6 +133,61 @@ Activity packets expire automatically, and the Orb falls back to `idle` if a
 watcher or adapter disappears. Activity is independent from audio playback;
 the speaking waveform takes visual priority while Kokoro is playing.
 
+## Custom avatar renderers (experimental)
+
+The skill has a versioned, host-neutral renderer contract for users or agents
+who want to create a different presence instead of the built-in Strand Orb.
+Read [references/PRESENCE-EVENT-API.md](references/PRESENCE-EVENT-API.md) before
+creating or reviewing an avatar, and use the files in
+`assets/avatar-template/` as the smallest working starting point. Validate the
+manifest against [references/avatar-manifest.schema.json](references/avatar-manifest.schema.json).
+
+The renderer receives sanitized local events for activity, speaking state,
+audio amplitude, and spectral bands from which it can derive cadence. It does
+not receive hidden reasoning, raw tool names or arguments, file paths, secrets,
+or arbitrary host APIs. Renderer code runs in the isolated Electron page with
+context isolation and Node integration disabled.
+
+An avatar may also advertise `avatar-state-v1` and include a sibling
+`avatar-capabilities.json`. A separate avatar-control skill can then write a
+complete high-level action set through the generic managed writer:
+
+```powershell
+py .codex-voice/avatar_state.py write --project-root . `
+  --avatar-id higan-live2d `
+  --source live2d-avatar-controls `
+  --scope project `
+  --revision 12 `
+  --actions-json '["pose.sweater-default", "effect.dazed-eyes"]'
+py .codex-voice/avatar_state.py status --project-root .
+py .codex-voice/avatar_state.py sync --project-root .
+```
+
+The voice layer forwards action ids only. The avatar-control runtime owns
+action discovery, conflicts, safe defaults, and compiled model operations.
+The full state is project-scoped in v0.1; an empty action list resets the
+avatar, and older revisions are ignored.
+
+Install and select a bundle without replacing the built-in renderer:
+
+```powershell
+python .codex-voice/avatar.py validate --source .\my-avatar
+python .codex-voice/avatar.py install --source .\my-avatar --use
+python .codex-voice/avatar.py list
+python .codex-voice/avatar.py use builtin
+python .codex-voice/avatar.py remove my-avatar
+```
+
+Custom source is stored in the project-owned `.codex-voice-avatars/` directory;
+the managed `.codex-voice/` runtime stores the active selection marker and the
+generic avatar-state bridge snapshot/diagnostic files. The runtime manifest
+records those files and the uninstaller removes them with the voice runtime;
+the user-owned avatar source remains intact.
+Restart the Orb after changing the selection. The loader validates the bundle
+path and falls back to the built-in renderer if the manifest or entry is
+invalid. Skill uninstall removes the managed runtime but leaves
+`.codex-voice-avatars/` intact.
+
 ## Controls
 
 Run the requested operation:
@@ -162,6 +217,15 @@ macOS, then press and drag with the left mouse button. The window captures the
 pointer only for that deliberate gesture and returns to click-through mode
 when the drag ends. The position is saved per project; press `Escape` to
 cancel a move in progress.
+
+The Orb window is resizable from its native transparent surface. Hold
+`Ctrl+Alt+Shift` and drag from the lower-right corner to resize it; the gesture
+works for the built-in Strand Orb and custom avatar renderers. The size is
+saved alongside the position in `.codex-voice/orb-position.json`. The host
+forwards the exact content `{width, height}` through `window-resize`; renderers
+with `avatar-state-v1` keep Electron zoom at `1` and fit their own canvas so
+Live2D and other high-resolution avatars do not become raster-scaled. Legacy
+custom renderers without that capability may still use host scaling.
 
 Report the resulting state briefly. The skill controls future responses; it
 does not speak the current response directly.

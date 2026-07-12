@@ -64,6 +64,14 @@ def main() -> int:
         assert_file(skill / relative)
     for path in skill.rglob("*.py"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    orb_main = (skill / "scripts" / "orb" / "main.cjs").read_text(encoding="utf-8")
+    orb_preload = (skill / "scripts" / "orb" / "preload.cjs").read_text(encoding="utf-8")
+    if "resizable: true" not in orb_main or "minWidth: MIN_SIZE" not in orb_main:
+        raise SystemExit("Orb window resize configuration is incomplete")
+    if "orb-resize-start" not in orb_main or "orb-resize" not in orb_preload:
+        raise SystemExit("Orb resize gesture bridge is incomplete")
+    if "activeAvatar?.stateSupported" not in orb_main or 'send("window-resize", { width, height });' not in orb_main:
+        raise SystemExit("Avatar-local resize contract is incomplete")
     skill_text = (skill / "SKILL.md").read_text(encoding="utf-8")
     if "name: codex-voice" not in skill_text or "configure.py" not in skill_text:
         raise SystemExit("Skill metadata/configuration instructions are incomplete")
