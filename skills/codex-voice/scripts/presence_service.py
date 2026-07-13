@@ -10,6 +10,7 @@ from typing import Protocol
 
 from activity import ACTIVITY_STATES, ActivityEmitter, state_ttl_seconds
 from inbox import Inbox
+from profiles import ProfileRegistry, ResolvedProfile
 
 
 SERVICE_SCHEMA = "codex-voice/presence-service/v0.1"
@@ -82,12 +83,14 @@ class PresenceService:
         playback: PlaybackOwner,
         *,
         adapter_name: str = "codex-rollout",
+        profile_registry: ProfileRegistry | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.voice_root = voice_root.resolve()
         self.inbox = inbox
         self.playback = playback
         self.adapter_name = _bounded_source(adapter_name)
+        self.profiles = profile_registry or ProfileRegistry(self.project_root, self.voice_root)
         self.emitter = ActivityEmitter()
         self._lock = threading.Lock()
         self._sequence = 0
@@ -117,6 +120,13 @@ class PresenceService:
                 "updated_at": _timestamp(),
             },
         )
+
+    def _profile(self, session_id: object, requested_profile_id: object = None) -> ResolvedProfile:
+        return self.profiles.resolve(session_id, requested_profile_id=requested_profile_id)
+
+    def _route_message(self, message: dict[str, object]) -> dict[str, object]:
+        profile = self._profile(message.get("session_id"), message.get("profile_id"))
+        return {**message, **profile.routing_fields()}
 
     def start(self) -> None:
         if self._running:
@@ -150,16 +160,26 @@ class PresenceService:
         if ttl_ms is None:
             ttl_ms = round(state_ttl_seconds(state) * 1000)
         ttl_ms = 0 if state == "idle" else max(500, min(30000, int(ttl_ms)))
+        profile = self._profile(session_id)
         event = self._event(
             "activity",
             session_id,
-            {"state": state, "source": _bounded_source(source), "ttl_ms": ttl_ms},
+            {
+                "state": state,
+                "source": _bounded_source(source),
+                "ttl_ms": ttl_ms,
+                "profile_id": profile.profile_id,
+                "avatar_id": profile.avatar_id,
+                "route_key": profile.route_key,
+            },
         )
         self.inbox.set_state(ACTIVITY_STATE_KEY, event.as_dict())
         return self.emitter.send(
             state,
             source=_bounded_source(source),
             session_id=session_id,
+            profile_id=profile.profile_id,
+            avatar_id=profile.avatar_id,
             ttl_ms=ttl_ms,
         )
 
@@ -170,7 +190,8 @@ class PresenceService:
             raise ValueError("speech message requires event_id")
         if message.get("project_root") != str(self.project_root):
             raise ValueError("speech message project_root does not belong to this service")
-        inserted = self.playback.enqueue(message)
+        routed = self._route_message(message)
+        inserted = self.playback.enqueue(routed)
         self.inbox.set_state(
             LAST_SPEECH_KEY,
             {
@@ -178,6 +199,9 @@ class PresenceService:
                 "session_id": message.get("session_id"),
                 "turn_id": message.get("turn_id"),
                 "kind": message.get("kind"),
+                "profile_id": routed.get("profile_id"),
+                "avatar_id": routed.get("avatar_id"),
+                "route_key": routed.get("route_key"),
                 "accepted": inserted,
                 "updated_at": _timestamp(),
             },
@@ -198,7 +222,8 @@ class PresenceService:
             raise ValueError("update project_root does not belong to this service")
         if not isinstance(message.get("text"), str) or not str(message["text"]).strip():
             raise ValueError("update requires non-empty text")
-        accepted = self.playback.publish_update(message)
+        routed = self._route_message(message)
+        accepted = self.playback.publish_update(routed)
         self.inbox.set_state(
             LAST_UPDATE_KEY,
             {
@@ -206,6 +231,9 @@ class PresenceService:
                 "session_id": message.get("session_id"),
                 "turn_id": message.get("turn_id"),
                 "kind": message.get("kind", "commentary"),
+                "profile_id": routed.get("profile_id"),
+                "avatar_id": routed.get("avatar_id"),
+                "route_key": routed.get("route_key"),
                 "accepted": accepted,
                 "updated_at": _timestamp(),
             },

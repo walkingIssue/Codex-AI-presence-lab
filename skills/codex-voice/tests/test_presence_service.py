@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from inbox import Inbox
 from presence_service import PresenceService
+from profiles import write_document
 
 
 class FakeEmitter:
@@ -106,11 +107,42 @@ class PresenceServiceTests(unittest.TestCase):
             try:
                 self.assertTrue(service.enqueue_speech(speech(Path(directory))))
                 self.assertEqual([item["event_id"] for item in playback.messages], ["event-1"])
+                self.assertEqual(playback.messages[0]["profile_id"], "default")
+                self.assertEqual(playback.messages[0]["route_key"], "session:session-a|profile:default")
                 last = inbox.get_state("presence_last_speech", {})
                 self.assertEqual(last["event_id"], "event-1")
                 self.assertEqual(service.status()["state"]["state"], "running")
                 with self.assertRaises(ValueError):
                     service.enqueue_speech({**speech(Path(directory)), "project_root": "C:/other"})
+            finally:
+                service.close()
+
+    def test_session_profile_is_attached_at_the_presence_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_document(
+                root / ".codex-voice",
+                {
+                    "schema": "codex-ai-presence/profiles/v0.1",
+                    "project_profile_id": "default",
+                    "profiles": {
+                        "default": {},
+                        "luna": {"avatar_id": "higan-live2d", "voice": "bf_isabella", "speed": 1.2},
+                    },
+                    "sessions": {"session-a": {"profile_id": "luna"}},
+                },
+            )
+            service, _, playback, emitter = self.make_service(directory)
+            service.start()
+            try:
+                self.assertTrue(service.enqueue_speech(speech(root)))
+                routed = playback.messages[-1]
+                self.assertEqual(routed["profile_id"], "luna")
+                self.assertEqual(routed["avatar_id"], "higan-live2d")
+                self.assertEqual(routed["tts_voice"], "bf_isabella")
+                service.publish_activity("thinking", session_id="session-a")
+                self.assertEqual(emitter.events[-1][1]["profile_id"], "luna")
+                self.assertEqual(emitter.events[-1][1]["avatar_id"], "higan-live2d")
             finally:
                 service.close()
 

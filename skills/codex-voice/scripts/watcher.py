@@ -393,6 +393,9 @@ class TTSWorker:
         *,
         event_id: str | None = None,
         pauseable: bool = False,
+        voice: str | None = None,
+        speed: float | None = None,
+        mode: str | None = None,
     ) -> str:
         if not self.start() or self.process is None:
             return "failed"
@@ -408,6 +411,12 @@ class TTSWorker:
             request["tts_pauseable"] = True
         if volume is not None:
             request["tts_volume"] = max(0, min(100, volume))
+        if isinstance(voice, str) and voice.strip():
+            request["tts_voice"] = voice.strip()
+        if speed is not None:
+            request["tts_speed"] = max(0.5, min(2.0, float(speed)))
+        if mode in {"stream", "quality"}:
+            request["tts_mode"] = mode
         try:
             self.process.stdin.write(json.dumps(request) + "\n")
             self.process.stdin.flush()
@@ -648,6 +657,9 @@ class PlaybackArbiter:
                     "session_id": session_id,
                     "session_label": message.get("session_label"),
                     "turn_id": message.get("turn_id"),
+                    "profile_id": message.get("profile_id"),
+                    "avatar_id": message.get("avatar_id"),
+                    "route_key": message.get("route_key"),
                     "kind": "commentary" if ephemeral_update else message.get("kind"),
                 },
             )
@@ -659,8 +671,11 @@ class PlaybackArbiter:
                     self.current["speech_text"] = text
             emit_orb_event(
                 {"type": "voice-output", "state": "playing", "session_id": session_id,
-                 "session_label": message.get("session_label"),
-                 "kind": "commentary" if ephemeral_update else message.get("kind")},
+                  "session_label": message.get("session_label"),
+                  "profile_id": message.get("profile_id"),
+                  "avatar_id": message.get("avatar_id"),
+                  "route_key": message.get("route_key"),
+                  "kind": "commentary" if ephemeral_update else message.get("kind")},
             )
             try:
                 outcome = self.worker.send(
@@ -668,6 +683,9 @@ class PlaybackArbiter:
                     volume=int(message.get("volume", 100)),
                     event_id=str(message.get("event_id")),
                     pauseable=not ephemeral_update,
+                    voice=str(message["tts_voice"]) if message.get("tts_voice") else None,
+                    speed=float(message["tts_speed"]) if message.get("tts_speed") is not None else None,
+                    mode=str(message["tts_mode"]) if message.get("tts_mode") else None,
                 )
                 if outcome is True:
                     outcome = "completed"
@@ -704,16 +722,18 @@ class PlaybackArbiter:
 
     @staticmethod
     def _is_ephemeral_update(message: dict[str, object]) -> bool:
-        return bool(message.get("_ephemeral_update")) or message.get("kind") in {
-            "commentary",
-            "update",
-        }
+        return bool(message.get("_ephemeral_update"))
 
     @staticmethod
     def _attention_key(message: dict[str, object]) -> str:
+        route_key = message.get("route_key")
+        if isinstance(route_key, str) and route_key.strip():
+            return route_key.strip()
         session_id = message.get("session_id")
         if isinstance(session_id, str) and session_id.strip():
-            return f"session:{session_id.strip()}"
+            profile_id = message.get("profile_id")
+            profile_key = profile_id.strip() if isinstance(profile_id, str) and profile_id.strip() else "default"
+            return f"session:{session_id.strip()}|profile:{profile_key}"
         label = message.get("session_label")
         if isinstance(label, str) and label.strip():
             return f"label:{label.strip()}"
@@ -736,6 +756,8 @@ class PlaybackArbiter:
                 "owner_key": owner_key,
                 "session_id": message.get("session_id"),
                 "session_label": message.get("session_label") or "Codex",
+                "profile_id": message.get("profile_id"),
+                "avatar_id": message.get("avatar_id"),
                 "turn_id": message.get("turn_id"),
                 "event_id": message.get("event_id"),
                 "updated_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
@@ -1396,6 +1418,12 @@ def main() -> int:
     recovered = inbox.recover_inflight()
     if recovered:
         log(voice_root, f"recovered {recovered} interrupted inbox item(s) after restart")
+    discarded_legacy_updates = inbox.discard_legacy_updates()
+    if discarded_legacy_updates:
+        log(
+            voice_root,
+            f"discarded {discarded_legacy_updates} legacy commentary inbox item(s) after update-lane migration",
+        )
     recovered_input = inbox.recover_input_state()
     if recovered_input is not None:
         removed_recordings = discard_orphan_recordings(voice_root)

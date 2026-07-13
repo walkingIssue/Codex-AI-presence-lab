@@ -31,7 +31,7 @@ The existing move helpers (`setMoveMode`, `dragStart`, `drag`, `dragEnd`, and
 ## Event envelope
 
 Every packet is a JSON object with a `type` field. Activity packets include
-source, sequence, timestamp, and optional session identity:
+source, sequence, timestamp, and optional routed session/profile identity:
 
 ```json
 {
@@ -41,7 +41,9 @@ source, sequence, timestamp, and optional session identity:
   "sequence": 12,
   "timestamp": "2026-07-12T01:00:00.000Z",
   "ttl_ms": 12000,
-  "session_id": "019..."
+  "session_id": "019...",
+  "profile_id": "luna",
+  "avatar_id": "higan-live2d"
 }
 ```
 
@@ -53,6 +55,28 @@ idle, thinking, tool, skill, cli, waiting, error
 
 Transient states expire after `ttl_ms`; a renderer should return to `idle` when
 the lease expires or when it receives an explicit idle packet.
+
+When multiple profiles are bound, the Electron host creates one avatar window
+per session binding. A `voice-output` ownership packet selects the foreground
+route before Kokoro begins:
+
+```json
+{
+  "type": "voice-output",
+  "state": "playing",
+  "session_id": "019...",
+  "profile_id": "luna",
+  "avatar_id": "higan-live2d",
+  "route_key": "session:019...|profile:luna",
+  "kind": "final"
+}
+```
+
+Session-scoped activity is delivered only to its matching window. Kokoro's
+following `state` and `audio` packets intentionally contain no text and may be
+unscoped; the host delivers them only to the current `voice-output` owner, not
+to every avatar. A scoped event for an unknown or unbound route is dropped
+rather than falling through to the avatar that spoke previously.
 
 Playback lifecycle packets bracket the audio stream:
 
@@ -89,6 +113,8 @@ character, creature, geometric field, or any other local visual form.
 - Use `activity` for semantic state color or geometry.
 - Use move-mode notifications to show a drag affordance.
 - Smooth and decay values locally; packets are samples, not frame commands.
+- Expect the host to budget animation callbacks (20 FPS idle, 30 FPS active by
+  default); use elapsed time rather than assuming a 60 Hz update loop.
 - Ignore unknown event types and states for forward compatibility.
 
 The renderer must not infer or display hidden reasoning. The current voice

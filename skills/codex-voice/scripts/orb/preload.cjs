@@ -1,5 +1,121 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Sandboxed Electron preloads cannot import local modules. These two functions
+// are deliberately self-contained because executeInMainWorld serializes them.
+function installFrameScheduler(idleFps, activeFps) {
+  if (window.__codexPresenceFrameScheduler) return window.__codexPresenceFrameScheduler.policy();
+
+  const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
+  const nativeCancelAnimationFrame = window.cancelAnimationFrame.bind(window);
+  const callbackLastRun = new WeakMap();
+  const pending = new Map();
+  let nextRequestId = 1;
+  let mode = "idle";
+  let idle = Math.max(1, Math.min(60, Number(idleFps) || 20));
+  let active = Math.max(idle, Math.min(60, Number(activeFps) || 30));
+
+  function requestAnimationFrameAtBudget(callback) {
+    if (typeof callback !== "function") {
+      throw new TypeError("requestAnimationFrame callback must be a function");
+    }
+    const requestId = nextRequestId;
+    nextRequestId = nextRequestId >= Number.MAX_SAFE_INTEGER ? 1 : nextRequestId + 1;
+    const request = { nativeId: 0 };
+    pending.set(requestId, request);
+
+    function pump(timestamp) {
+      if (!pending.has(requestId)) return;
+      const fps = mode === "active" ? active : idle;
+      const minimumInterval = 1000 / fps;
+      const lastRun = callbackLastRun.get(callback);
+      if (lastRun === undefined || timestamp - lastRun >= minimumInterval - 0.5) {
+        pending.delete(requestId);
+        callbackLastRun.set(callback, timestamp);
+        callback(timestamp);
+        return;
+      }
+      request.nativeId = nativeRequestAnimationFrame(pump);
+    }
+
+    request.nativeId = nativeRequestAnimationFrame(pump);
+    return requestId;
+  }
+
+  function cancelAnimationFrameAtBudget(requestId) {
+    const request = pending.get(requestId);
+    if (!request) return;
+    pending.delete(requestId);
+    nativeCancelAnimationFrame(request.nativeId);
+  }
+
+  const scheduler = Object.freeze({
+    setMode(nextMode) {
+      mode = nextMode === "active" ? "active" : "idle";
+      return mode;
+    },
+    policy() {
+      return Object.freeze({ mode, idleFps: idle, activeFps: active });
+    },
+  });
+
+  Object.defineProperty(window, "requestAnimationFrame", {
+    configurable: true,
+    writable: true,
+    value: requestAnimationFrameAtBudget,
+  });
+  Object.defineProperty(window, "cancelAnimationFrame", {
+    configurable: true,
+    writable: true,
+    value: cancelAnimationFrameAtBudget,
+  });
+  Object.defineProperty(window, "__codexPresenceFrameScheduler", {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: scheduler,
+  });
+  return scheduler.policy();
+}
+
+function setFrameSchedulerMode(mode) {
+  return window.__codexPresenceFrameScheduler?.setMode(mode) ?? "unavailable";
+}
+
+const framePolicy = ipcRenderer.sendSync("renderer-frame-policy");
+let frameMode = "idle";
+let frameIdleTimer = null;
+if (framePolicy?.enabled !== false) {
+  try {
+    contextBridge.executeInMainWorld({
+      func: installFrameScheduler,
+      args: [framePolicy?.idleFps, framePolicy?.activeFps],
+    });
+  } catch (_) {
+    // Frame budgeting is an optimization; renderer startup must remain fail-open.
+  }
+}
+
+function applyFrameMode(nextMode, delayMilliseconds = 0) {
+  if (framePolicy?.enabled === false) return;
+  if (frameIdleTimer !== null) {
+    clearTimeout(frameIdleTimer);
+    frameIdleTimer = null;
+  }
+  const normalized = nextMode === "active" ? "active" : "idle";
+  const apply = () => {
+    frameIdleTimer = null;
+    if (frameMode === normalized) return;
+    frameMode = normalized;
+    try {
+      contextBridge.executeInMainWorld({ func: setFrameSchedulerMode, args: [normalized] });
+    } catch (_) {
+      // Custom renderers continue with their native cadence if the bridge is unavailable.
+    }
+  };
+  if (delayMilliseconds > 0) frameIdleTimer = setTimeout(apply, delayMilliseconds);
+  else apply();
+}
+
 const RESIZE_HANDLE_PX = 48;
 let resizing = false;
 let resizePointerId = null;
@@ -361,7 +477,12 @@ window.addEventListener("keyup", (event) => {
 
 contextBridge.exposeInMainWorld("orbApi", {
   onAudioEvent(callback) {
-    const listener = (_event, payload) => callback(payload);
+    const listener = (_event, payload) => {
+      if (payload?.type === "state") {
+        applyFrameMode(payload.state === "speaking" ? "active" : "idle", payload.state === "speaking" ? 0 : 600);
+      }
+      callback(payload);
+    };
     ipcRenderer.on("audio-event", listener);
     return () => ipcRenderer.removeListener("audio-event", listener);
   },
@@ -371,7 +492,10 @@ contextBridge.exposeInMainWorld("orbApi", {
     return () => ipcRenderer.removeListener("avatar-state", listener);
   },
   onMoveMode(callback) {
-    const listener = (_event, enabled) => callback(Boolean(enabled));
+    const listener = (_event, enabled) => {
+      applyFrameMode(enabled ? "active" : "idle", enabled ? 0 : 300);
+      callback(Boolean(enabled));
+    };
     ipcRenderer.on("move-mode", listener);
     return () => ipcRenderer.removeListener("move-mode", listener);
   },
@@ -381,7 +505,11 @@ contextBridge.exposeInMainWorld("orbApi", {
     return () => ipcRenderer.removeListener("window-resize", listener);
   },
   onVoiceInputState(callback) {
-    const listener = (_event, payload) => callback(payload);
+    const listener = (_event, payload) => {
+      const active = ["listening", "transcribing", "submitting"].includes(payload?.state);
+      applyFrameMode(active ? "active" : "idle", active ? 0 : 600);
+      callback(payload);
+    };
     ipcRenderer.on("voice-input-state", listener);
     return () => ipcRenderer.removeListener("voice-input-state", listener);
   },

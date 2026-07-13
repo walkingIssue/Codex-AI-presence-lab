@@ -18,6 +18,7 @@ from watcher import PlaybackArbiter
 class FakeWorker:
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.requests: list[dict[str, object]] = []
 
     def start(self) -> bool:
         return True
@@ -29,8 +30,12 @@ class FakeWorker:
         *,
         event_id: str | None = None,
         pauseable: bool = False,
+        voice: str | None = None,
+        speed: float | None = None,
+        mode: str | None = None,
     ) -> str:
         self.sent.append(text)
+        self.requests.append({"voice": voice, "speed": speed, "mode": mode})
         return "completed"
 
     def request_stop(self) -> None:
@@ -53,8 +58,12 @@ class PausingWorker(FakeWorker):
         *,
         event_id: str | None = None,
         pauseable: bool = False,
+        voice: str | None = None,
+        speed: float | None = None,
+        mode: str | None = None,
     ) -> str:
         self.sent.append(text)
+        self.requests.append({"voice": voice, "speed": speed, "mode": mode})
         self.started.set()
         if not self.release.wait(2):
             return "failed"
@@ -74,8 +83,12 @@ class PreemptibleUpdateWorker(FakeWorker):
         *,
         event_id: str | None = None,
         pauseable: bool = False,
+        voice: str | None = None,
+        speed: float | None = None,
+        mode: str | None = None,
     ) -> str:
         self.sent.append(text)
+        self.requests.append({"voice": voice, "speed": speed, "mode": mode})
         if not pauseable:
             self.update_started.set()
             self.stop_requested.wait(2)
@@ -200,6 +213,38 @@ class ArbiterTests(unittest.TestCase):
             next_a = queued("a-3", "a")
             next_a["turn_id"] = "turn-3"
             self.assertEqual(reopened._speech_text(next_a), "Session A says: a-3")
+
+    def test_profile_route_selects_voice_without_creating_another_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch("watcher.emit_orb_event"):
+            root = Path(directory)
+            inbox = Inbox(root / "inbox.sqlite3")
+            message = queued("luna-1", "a")
+            message.update(
+                {
+                    "profile_id": "luna",
+                    "avatar_id": "higan-live2d",
+                    "route_key": "session:a|profile:luna",
+                    "tts_voice": "bf_isabella",
+                    "tts_speed": 1.2,
+                    "tts_mode": "stream",
+                }
+            )
+            inbox.enqueue(message)
+            arbiter = PlaybackArbiter(root, root, inbox)
+            worker = FakeWorker()
+            arbiter.worker = worker
+            arbiter.start()
+            try:
+                self.wait_for_status(inbox, "luna-1", "played")
+                self.assertEqual(
+                    worker.requests,
+                    [{"voice": "bf_isabella", "speed": 1.2, "mode": "stream"}],
+                )
+                attention = inbox.get_state("presence_attention", {})
+                self.assertEqual(attention["owner_key"], "session:a|profile:luna")
+                self.assertEqual(attention["avatar_id"], "higan-live2d")
+            finally:
+                arbiter.close()
 
     def test_updates_are_latest_only_and_not_durable(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch("watcher.emit_orb_event"):

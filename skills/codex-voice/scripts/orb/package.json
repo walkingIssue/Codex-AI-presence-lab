@@ -5,7 +5,8 @@
   "description": "A project-local voice-reactive Strand Orb companion for Codex.",
   "main": "main.cjs",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node --test frame_policy.test.cjs presence_windows.test.cjs"
   },
   "devDependencies": {
     "electron": "43.1.0"

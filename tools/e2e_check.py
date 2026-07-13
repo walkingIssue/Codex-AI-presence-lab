@@ -26,6 +26,7 @@ REQUIRED_FILES = (
     "scripts/uninstall.py",
     "scripts/watcher.py",
     "scripts/presence_service.py",
+    "scripts/profiles.py",
     "scripts/clipboard.py",
 )
 
@@ -80,13 +81,14 @@ def main() -> int:
 
     sys.path.insert(0, str(skill / "scripts"))
     from activity import classify_activity
-    from setup import install_activity_script, install_runtime_manifest
+    from setup import install_activity_script, install_profile_script, install_runtime_manifest
     from uninstall import read_runtime_manifest
 
     manifest_text = (skill / "RUNTIME-MANIFEST.md").read_text(encoding="utf-8")
     for required_entry in (
         ".codex-voice/activity.py",
         ".codex-voice/presence_service.py",
+        ".codex-voice/presence-profiles.json",
         ".codex-voice/orb/",
         ".codex/hooks/speak.py",
     ):
@@ -117,9 +119,12 @@ def main() -> int:
         scripts.mkdir(parents=True)
         voice_root.mkdir()
         install_activity_script(voice_root)
+        install_profile_script(voice_root)
         install_runtime_manifest(voice_root)
         if not (voice_root / "activity.py").is_file():
             raise SystemExit("Setup did not install the activity bridge into the project runtime")
+        if not (voice_root / "profiles.py").is_file() or not (voice_root / "configuration.py").is_file():
+            raise SystemExit("Setup did not install the profile resolver into the project runtime")
         manifest_entries = read_runtime_manifest(voice_root)
         if manifest_entries is None or ".codex-voice/activity.py" not in manifest_entries:
             raise SystemExit("Setup did not install a readable runtime manifest")
@@ -179,6 +184,49 @@ def main() -> int:
         if "commentary volume: 100%" not in status.stdout:
             raise SystemExit("toggle status omitted commentary volume")
         run([sys.executable, str(configure), "set", "--speed", "3"], project, expect=2)
+        run(
+            [
+                sys.executable,
+                str(voice_root / "profiles.py"),
+                "--project-root",
+                str(project),
+                "set",
+                "luna",
+                "--avatar-id",
+                "builtin",
+                "--voice",
+                "af_heart",
+                "--speed",
+                "1.2",
+            ],
+            project,
+        )
+        run(
+            [
+                sys.executable,
+                str(voice_root / "profiles.py"),
+                "--project-root",
+                str(project),
+                "bind",
+                "session-luna",
+                "luna",
+            ],
+            project,
+        )
+        resolved_profile = run(
+            [
+                sys.executable,
+                str(voice_root / "profiles.py"),
+                "--project-root",
+                str(project),
+                "resolve",
+                "--session-id",
+                "session-luna",
+            ],
+            project,
+        )
+        if '"profile_id": "luna"' not in resolved_profile.stdout:
+            raise SystemExit("Session presence profile did not resolve through the installed runtime")
         run([sys.executable, str(skill / "scripts" / "setup.py"), "--help"], project)
 
         hooks_dir = project / ".codex" / "hooks"

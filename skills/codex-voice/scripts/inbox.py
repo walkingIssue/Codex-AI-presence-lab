@@ -71,6 +71,12 @@ class Inbox:
                     session_id TEXT,
                     thread_id TEXT,
                     turn_id TEXT,
+                    profile_id TEXT,
+                    avatar_id TEXT,
+                    route_key TEXT,
+                    tts_voice TEXT,
+                    tts_speed REAL,
+                    tts_mode TEXT,
                     session_label TEXT NOT NULL,
                     kind TEXT NOT NULL,
                     text TEXT NOT NULL,
@@ -114,6 +120,17 @@ class Inbox:
                 connection.execute("ALTER TABLE messages ADD COLUMN resume_text TEXT")
             if "resume_offset" not in columns:
                 connection.execute("ALTER TABLE messages ADD COLUMN resume_offset INTEGER")
+            profile_columns = {
+                "profile_id": "TEXT",
+                "avatar_id": "TEXT",
+                "route_key": "TEXT",
+                "tts_voice": "TEXT",
+                "tts_speed": "REAL",
+                "tts_mode": "TEXT",
+            }
+            for name, column_type in profile_columns.items():
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE messages ADD COLUMN {name} {column_type}")
 
     def enqueue(self, message: dict[str, object]) -> bool:
         required = ("event_id", "project_root", "kind", "text")
@@ -127,9 +144,10 @@ class Inbox:
                 """
                 INSERT OR IGNORE INTO messages (
                     event_id, schema, project_root, session_id, thread_id, turn_id,
+                    profile_id, avatar_id, route_key, tts_voice, tts_speed, tts_mode,
                     session_label, kind, text, sequence, volume, created_at,
                     status, available_at, announced_key
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
                 """,
                 (
                     message["event_id"],
@@ -138,6 +156,12 @@ class Inbox:
                     message.get("session_id"),
                     message.get("thread_id"),
                     message.get("turn_id"),
+                    message.get("profile_id"),
+                    message.get("avatar_id"),
+                    message.get("route_key"),
+                    message.get("tts_voice"),
+                    message.get("tts_speed"),
+                    message.get("tts_mode"),
                     message.get("session_label") or "Codex",
                     message["kind"],
                     message["text"],
@@ -161,6 +185,28 @@ class Inbox:
                 WHERE status = 'playing'
                 """,
                 (now_seconds(),),
+            )
+            return cursor.rowcount
+
+    def discard_legacy_updates(self) -> int:
+        """Retire commentary rows created before the ephemeral update lane.
+
+        Older watcher revisions stored progress commentary as durable inbox
+        messages. They are no longer replayable output, so a restart must
+        clear them instead of speaking an old backlog or leaving a stale
+        ``playing`` row behind.
+        """
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE messages
+                SET status = 'played',
+                    last_error = 'discarded_legacy_ephemeral_update',
+                    resume_text = NULL,
+                    resume_offset = NULL
+                WHERE kind IN ('commentary', 'update')
+                  AND status IN ('queued', 'retry', 'playing')
+                """
             )
             return cursor.rowcount
 

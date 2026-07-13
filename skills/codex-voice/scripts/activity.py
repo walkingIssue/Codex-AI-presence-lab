@@ -103,6 +103,8 @@ class ActivityEmitter:
         *,
         source: str = "adapter",
         session_id: str | None = None,
+        profile_id: str | None = None,
+        avatar_id: str | None = None,
         ttl_ms: int | None = None,
     ) -> bool:
         if state not in ACTIVITY_STATES:
@@ -120,6 +122,10 @@ class ActivityEmitter:
         }
         if isinstance(session_id, str) and session_id:
             packet["session_id"] = session_id
+        if isinstance(profile_id, str) and profile_id:
+            packet["profile_id"] = profile_id
+        if isinstance(avatar_id, str) and avatar_id:
+            packet["avatar_id"] = avatar_id
         self.sequence += 1
         try:
             self.socket.sendto(json.dumps(packet, separators=(",", ":")).encode("utf-8"), self.address)

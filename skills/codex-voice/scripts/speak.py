@@ -903,20 +903,35 @@ def play_audio(
 
 
 def handle_payload(payload: dict, *, emit_finish: bool = True) -> int:
+    overrides: dict[str, str] = {}
     requested_volume = payload.get("tts_volume")
-    previous_volume = os.environ.get("CODEX_TTS_VOLUME")
-    if requested_volume is not None:
-        try:
-            os.environ["CODEX_TTS_VOLUME"] = str(max(0, min(100, int(requested_volume))))
-        except (TypeError, ValueError):
-            pass
+    try:
+        if requested_volume is not None:
+            overrides["CODEX_TTS_VOLUME"] = str(max(0, min(100, int(requested_volume))))
+    except (TypeError, ValueError):
+        pass
+    requested_voice = payload.get("tts_voice")
+    if isinstance(requested_voice, str) and requested_voice.strip():
+        overrides["CODEX_TTS_VOICE"] = requested_voice.strip().lower()
+    requested_speed = payload.get("tts_speed")
+    try:
+        if requested_speed is not None:
+            overrides["CODEX_TTS_SPEED"] = str(max(0.5, min(2.0, float(requested_speed))))
+    except (TypeError, ValueError):
+        pass
+    requested_mode = payload.get("tts_mode")
+    if isinstance(requested_mode, str) and requested_mode.strip().lower() in {"stream", "quality"}:
+        overrides["CODEX_TTS_MODE"] = requested_mode.strip().lower()
+    previous = {name: os.environ.get(name) for name in overrides}
+    os.environ.update(overrides)
     try:
         return _handle_payload(payload, emit_finish=emit_finish)
     finally:
-        if previous_volume is None:
-            os.environ.pop("CODEX_TTS_VOLUME", None)
-        else:
-            os.environ["CODEX_TTS_VOLUME"] = previous_volume
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _handle_payload(payload: dict, *, emit_finish: bool) -> int:

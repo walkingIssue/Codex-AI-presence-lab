@@ -31,6 +31,8 @@ predate a later file.
 | Avatar state snapshot | `.codex-voice/avatar-state.json` | Runtime-root cleanup |
 | Avatar state temporary writes | `.codex-voice/.avatar-state.json.*.tmp` | Runtime-root cleanup |
 | Avatar state diagnostics | `.codex-voice/avatar-state-status.json` | Runtime-root cleanup |
+| Presence profile manager and settings helper | `.codex-voice/{profiles.py,configuration.py}` | Runtime-root cleanup |
+| Presence profiles and session bindings | `.codex-voice/presence-profiles.json` | Runtime-root cleanup |
 | Voice lifecycle wrapper | `.codex-voice/start_voice.ps1` | Runtime-root cleanup |
 | Configuration markers | `.codex-voice/{voice,mode,speed,volume,commentary-volume,provider,progress,enabled,orb.enabled}` | Runtime-root cleanup |
 | Voice-input settings | `.codex-voice/input.json` | Runtime-root cleanup |
@@ -69,4 +71,6 @@ predate a later file.
 | `2026-07-13-voice-input-clipboard` | Made clipboard delivery the safe default for GUI-originated sessions, added explicit App Server opt-in, and centralized built-in Orb gesture handling in the shared preload | Adds `.codex-voice/clipboard.py`; the helper remains inside the runtime boundary and is removed with it |
 | `2026-07-13-pauseable-pcm-playback` | Decoupled executor-backed Kokoro inference from a frame-paced ffplay consumer so voice capture can terminate only the OS sink, buffer PCM during the hold, and resume without restarting or requeueing the model request | Adds the owned `tts-resume.request` marker; stop/resume/PID markers are removed by runtime cleanup |
 | `2026-07-13-pauseable-pcm-tail-drain` | Uses one cumulative playback deadline to compensate both early Windows timer wakeups and per-frame overhead, and allows ffplay enough bounded time to drain EOF so resumed speech cannot lose its final buffered seconds | No new artifact or cleanup boundary |
-| `2026-07-13-stateful-attention-updates` | Keeps real output in the durable inbox, routes commentary through a coalesced ephemeral update lane, and persists the session that owns spoken attention so labels are announced only on owner changes | Reuses the existing inbox/runtime-state database; no new cleanup boundary |
+| `2026-07-13-stateful-attention-updates` | Keeps real output in the durable inbox, routes commentary through a coalesced ephemeral update lane, persists the session that owns spoken attention, and retires legacy commentary rows on restart | Reuses the existing inbox/runtime-state database; no new cleanup boundary |
+| `2026-07-13-adaptive-render-budget` | Caps renderer animation work at 20 FPS idle and 30 FPS active before custom avatar scripts load; values can be overridden or disabled through `CODEX_ORB_*` environment settings | Adds host modules inside the existing `.codex-voice/orb/` boundary; no external cleanup path |
+| `2026-07-13-session-presence-profiles` | Resolves session-bound avatar and Kokoro voice/speed/mode identity at Presence Service, snapshots routing fields in the durable inbox, and materializes one Electron avatar window per bound session while retaining one playback arbiter and worker | Adds the owned `presence-profiles.json`, `profiles.py`, and `configuration.py` files inside `.codex-voice`; user avatar bundles remain protected |

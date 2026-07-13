@@ -74,9 +74,9 @@ hands sanitized activity and visible-output envelopes to
 `.codex-voice/presence_service.py`, which owns the local lifecycle boundary
 and delegates all playback to the existing single inbox/playback arbiter.
 Renderer-specific code stays behind the existing activity and avatar-state
-bridges. A future host adapter should target Codex app-server events; ACP in
-the adjacent research notes is Agentic Commerce Protocol and is not part of
-this local runtime.
+bridges. Future Codex app-server, Agent Client Protocol (ACP), and other host
+adapters should all target this same service instead of introducing another
+speech or presentation owner.
 
 ## Configuration
 
@@ -204,6 +204,44 @@ Restart the Orb after changing the selection. The loader validates the bundle
 path and falls back to the built-in renderer if the manifest or entry is
 invalid. Skill uninstall removes the managed runtime but leaves
 `.codex-voice-avatars/` intact.
+
+## Session presence profiles (experimental)
+
+Profiles bind a high-level avatar identity and Kokoro voice/speed/mode to a
+session. Presence Service resolves the profile before enqueueing speech, the
+durable inbox snapshots those routing fields, and the existing single
+PlaybackArbiter sends them to the existing warm Kokoro worker per request.
+Profiles do not create a second worker or put identity data into spoken text.
+The provider remains project-wide because it selects the worker/model runtime.
+
+Create profiles and bind sessions with the managed project-local command:
+
+```powershell
+py .codex-voice/profiles.py --project-root . set sol --avatar-id builtin --voice af_heart --speed 1.0 --mode stream
+py .codex-voice/profiles.py --project-root . set luna --avatar-id higan-live2d --voice bf_isabella --speed 1.2 --mode stream
+py .codex-voice/profiles.py --project-root . bind $env:CODEX_THREAD_ID luna
+py .codex-voice/profiles.py --project-root . default sol
+py .codex-voice/profiles.py --project-root . list
+```
+
+The canonical file is `.codex-voice/presence-profiles.json`. Resolution order
+is an explicit profile requested at the Presence boundary, then the session
+binding, then `project_profile_id`, then legacy project voice/avatar defaults.
+`session_id`, `thread_id`, `turn_id`, `profile_id`, and `avatar_id` remain
+separate fields. The spoken-attention owner is the composite
+`session:<id>|profile:<id>` route.
+
+Restart the Orb after adding or removing bindings. It creates one transparent
+window per bound session in one Electron process. Session-scoped activity goes
+to that session's avatar; unscoped Kokoro amplitude/state packets go only to
+the most recent `voice-output` owner. Holding `Ctrl+Alt`/`Cmd+Alt` and the right
+mouse button on any profile avatar targets voice input to that avatar's bound
+session.
+
+The host budgets animation callbacks before renderer scripts load: 20 FPS when
+idle and 30 FPS while speaking, recording, or interacting. Override with
+`CODEX_ORB_IDLE_FPS` and `CODEX_ORB_ACTIVE_FPS`; set
+`CODEX_ORB_FRAME_LIMIT=off` only for renderer diagnosis.
 
 ## Controls
 

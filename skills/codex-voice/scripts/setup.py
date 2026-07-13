@@ -44,15 +44,18 @@ sessions.json
 avatar-selection.json
 avatar-state.json
 avatar-state-status.json
+presence-profiles.json
 input.json
 inbox.sqlite3*
 inbox/
 stt-models/
 """
 ORB_FILES = (
+    "frame_policy.cjs",
     "index.html",
     "main.cjs",
     "preload.cjs",
+    "presence_windows.cjs",
     "renderer.js",
     "styles.css",
     "package.json",
@@ -303,6 +306,12 @@ def install_avatar_state_script(voice_root: Path) -> None:
     shutil.copy2(SCRIPT_ROOT / "avatar_state.py", voice_root / "avatar_state.py")
 
 
+def install_profile_script(voice_root: Path) -> None:
+    """Expose session/profile identity routing from the project runtime."""
+    for name in ("configuration.py", "profiles.py"):
+        shutil.copy2(SCRIPT_ROOT / name, voice_root / name)
+
+
 def install_voice_input_scripts(voice_root: Path) -> None:
     """Expose the local inbox, input control, STT, and delivery adapters."""
     for name in ("inbox.py", "voice_input.py", "stt.py", "delivery.py", "clipboard.py", "presence_service.py"):
@@ -463,6 +472,7 @@ def main() -> int:
     install_activity_script(voice_root)
     install_avatar_script(voice_root)
     install_avatar_state_script(voice_root)
+    install_profile_script(voice_root)
     install_voice_input_scripts(voice_root)
     install_runtime_manifest(voice_root)
 

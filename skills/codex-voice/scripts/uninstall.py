@@ -197,6 +197,7 @@ def remove_voice_root(voice_root: Path, *, keep_assets: bool) -> None:
             voice_root / "orb.enabled",
             voice_root / "progress",
             voice_root / "input.json",
+            voice_root / "presence-profiles.json",
             voice_root / "tts-player.pid",
             voice_root / "tts-stop.request",
             voice_root / "tts-resume.request",

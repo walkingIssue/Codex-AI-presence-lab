@@ -102,7 +102,8 @@ def control(voice_root: Path, command: str, payload: dict[str, object]) -> int:
     if command == "capture-start":
         focus = inbox.get_state("focus", {})
         focus = focus if isinstance(focus, dict) else {}
-        target = focus.get("session_id") or inbox.get_state("last_session_id")
+        requested_target = payload.get("target_session_id")
+        target = requested_target or focus.get("session_id") or inbox.get_state("last_session_id")
         if not isinstance(target, str) or not target:
             return emit({"ok": False, "error": "no_target_session"}, 4)
         # Gate queue claims before asking ffplay to stop. Otherwise the playback
@@ -174,6 +175,7 @@ def main() -> int:
     control_parser.add_argument("kind", choices=("capture-start", "capture-finish", "capture-cancel"))
     control_parser.add_argument("--recording")
     control_parser.add_argument("--capture-sequence", type=int)
+    control_parser.add_argument("--target-session-id")
 
     subparsers.add_parser("status")
 
@@ -211,6 +213,8 @@ def main() -> int:
     payload = {"recording": args.recording} if args.recording else {}
     if args.capture_sequence is not None:
         payload["capture_sequence"] = args.capture_sequence
+    if args.target_session_id:
+        payload["target_session_id"] = args.target_session_id
     return control(voice_root, args.kind, payload)
 
 

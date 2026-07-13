@@ -130,6 +130,26 @@ class VoiceInputDeliveryTests(unittest.TestCase):
             self.assertEqual(controls[0]["payload"]["capture_sequence"], 1)
             self.assertEqual(inbox.get_state("input")["capture_sequence"], 1)
 
+    def test_capture_start_can_target_the_clicked_profile_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "input.json").write_text(
+                json.dumps({"input_enabled": True}), encoding="utf-8"
+            )
+            inbox = Inbox(root / "inbox.sqlite3")
+            inbox.set_state("last_session_id", "session-a")
+            with patch("voice_input.request_immediate_playback_stop"), redirect_stdout(io.StringIO()):
+                result = voice_input.control(
+                    root,
+                    "capture-start",
+                    {"target_session_id": "session-b"},
+                )
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                inbox.get_state("focus"),
+                {"state": "listening", "session_id": "session-b"},
+            )
+
     def test_immediate_stop_terminates_only_the_player_and_sets_pause_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -3,6 +3,8 @@ const { spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
 const fs = require("node:fs");
 const path = require("node:path");
+const { framePolicyFromEnvironment } = require("./frame_policy.cjs");
+const { routeWindowKeys, windowDescriptors } = require("./presence_windows.cjs");
 
 const PORT = Number(process.env.CODEX_ORB_PORT || 17831);
 const SIZE = 440;
@@ -15,6 +17,7 @@ const VOICE_ROOT = path.join(__dirname, "..");
 const PROJECT_ROOT = path.join(VOICE_ROOT, "..");
 const AVATAR_SOURCE_ROOT = path.join(PROJECT_ROOT, ".codex-voice-avatars");
 const AVATAR_SELECTION_PATH = path.join(VOICE_ROOT, "avatar-selection.json");
+const PRESENCE_PROFILES_PATH = path.join(VOICE_ROOT, "presence-profiles.json");
 const AVATAR_STATE_PATH = path.join(VOICE_ROOT, "avatar-state.json");
 const AVATAR_STATUS_PATH = path.join(VOICE_ROOT, "avatar-state-status.json");
 const INPUT_SETTINGS_PATH = path.join(VOICE_ROOT, "input.json");
@@ -24,6 +27,7 @@ const AVATAR_STATE_CAPABILITY = "avatar-state-v1";
 const ACTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const SOURCE_PATTERN = /^[A-Za-z0-9._:-]{1,80}$/;
 const MAX_ACTIONS = 128;
+const FRAME_POLICY = framePolicyFromEnvironment();
 let windowRef = null;
 let socket = null;
 let moveMode = false;
@@ -31,6 +35,10 @@ let dragState = null;
 let rendererReady = false;
 let avatarStateWatcher = false;
 let activeAvatar = null;
+let activeDescriptor = null;
+let presenceDescriptors = [];
+let foregroundWindowKey = null;
+const secondaryWindows = new Map();
 let acceptedAvatarState = null;
 const lastAvatarRevisions = new Map();
 let windowStateWriteTimer = null;
@@ -124,10 +132,29 @@ function builtinAvatarInfo() {
   };
 }
 
-function selectedAvatarInfo() {
+function selectedAvatarId() {
   try {
     const selection = JSON.parse(fs.readFileSync(AVATAR_SELECTION_PATH, "utf8"));
     const avatarId = typeof selection.avatar_id === "string" ? selection.avatar_id : "";
+    return /^[a-z0-9][a-z0-9-]{0,63}$/.test(avatarId) ? avatarId : "builtin";
+  } catch (_) {
+    return "builtin";
+  }
+}
+
+function configuredPresenceDescriptors() {
+  let document = null;
+  try {
+    document = JSON.parse(fs.readFileSync(PRESENCE_PROFILES_PATH, "utf8"));
+  } catch (_) {
+    // A missing or invalid profile document preserves the legacy single avatar.
+  }
+  return windowDescriptors(document, selectedAvatarId());
+}
+
+function selectedAvatarInfo(requestedAvatarId = null) {
+  try {
+    const avatarId = typeof requestedAvatarId === "string" ? requestedAvatarId : selectedAvatarId();
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(avatarId) || avatarId === "builtin") {
       return builtinAvatarInfo();
     }
@@ -169,7 +196,7 @@ function writeAvatarStatus(reason, state, accepted) {
   const status = {
     schema: "codex-ai-presence/avatar-state-status/v0.1",
     type: "avatar-state-status",
-    avatar_id: activeAvatar?.id || "builtin",
+    avatar_id: state?.avatar_id || activeAvatar?.id || "builtin",
     accepted: Boolean(accepted),
     reason,
     revision: Number.isInteger(state?.revision) ? state.revision : null,
@@ -221,11 +248,27 @@ function parseAvatarState(value) {
   return { ...value, actions: actions.sort() };
 }
 
-function sendAvatarState() {
-  if (!rendererReady || !windowRef || windowRef.isDestroyed() || !acceptedAvatarState) {
-    return;
+function rendererWindows() {
+  const renderers = [];
+  if (windowRef && !windowRef.isDestroyed() && activeDescriptor && activeAvatar) {
+    renderers.push({
+      key: activeDescriptor.key,
+      avatar: activeAvatar,
+      window: windowRef,
+      ready: rendererReady,
+    });
   }
-  windowRef.webContents.send("avatar-state", acceptedAvatarState);
+  renderers.push(...secondaryWindows.values());
+  return renderers;
+}
+
+function sendAvatarState() {
+  if (!acceptedAvatarState) return;
+  for (const renderer of rendererWindows()) {
+    if (renderer.ready && renderer.avatar.id === acceptedAvatarState.avatar_id && !renderer.window.isDestroyed()) {
+      renderer.window.webContents.send("avatar-state", acceptedAvatarState);
+    }
+  }
 }
 
 function loadAvatarState() {
@@ -253,12 +296,13 @@ function loadAvatarState() {
     log(`avatar state rejected: ${error.message}`);
     return;
   }
-  if (!activeAvatar || activeAvatar.id === "builtin" || !activeAvatar.stateSupported) {
-    writeAvatarStatus("unsupported-capability", state, false);
+  const stateRenderers = rendererWindows().filter((renderer) => renderer.avatar.id === state.avatar_id);
+  if (!stateRenderers.length) {
+    writeAvatarStatus("avatar-mismatch", state, false);
     return;
   }
-  if (state.avatar_id !== activeAvatar.id) {
-    writeAvatarStatus("avatar-mismatch", state, false);
+  if (!stateRenderers.some((renderer) => renderer.avatar.id !== "builtin" && renderer.avatar.stateSupported)) {
+    writeAvatarStatus("unsupported-capability", state, false);
     return;
   }
   const lastRevision = lastAvatarRevisions.get(state.source);
@@ -405,6 +449,28 @@ function pointFromPayload(payload) {
   return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
 }
 
+function routeAudioEvent(event) {
+  if (event?.type === "voice-output") {
+    const owner = presenceDescriptors.find((descriptor) => (
+      (typeof event.route_key === "string" && descriptor.key === event.route_key)
+      || (
+        typeof event.session_id === "string"
+        && descriptor.sessionId === event.session_id
+        && (!event.profile_id || descriptor.profileId === event.profile_id)
+      )
+    ));
+    // Clearing an unknown owner prevents its following unscoped Kokoro frames
+    // from animating whichever session happened to speak previously.
+    foregroundWindowKey = owner?.key || null;
+  }
+  const targetKeys = new Set(routeWindowKeys(presenceDescriptors, event, foregroundWindowKey));
+  for (const renderer of rendererWindows()) {
+    if (renderer.ready && targetKeys.has(renderer.key) && !renderer.window.isDestroyed()) {
+      renderer.window.webContents.send("audio-event", event);
+    }
+  }
+}
+
 function startAudioSocket() {
   socket = dgram.createSocket("udp4");
   socket.on("error", () => {
@@ -414,9 +480,7 @@ function startAudioSocket() {
   socket.on("message", (message) => {
     try {
       const event = JSON.parse(message.toString("utf8"));
-      if (windowRef && !windowRef.isDestroyed()) {
-        windowRef.webContents.send("audio-event", event);
-      }
+      routeAudioEvent(event);
     } catch (_) {
       // Ignore malformed local packets.
     }
@@ -442,13 +506,95 @@ function syncRendererScale() {
   }
 }
 
+function syncSecondaryRendererScale(renderer) {
+  if (!renderer.ready || renderer.window.isDestroyed()) return;
+  const [width, height] = renderer.window.getContentSize();
+  const baseDimension = Math.min(width, height);
+  const rendererKeepsNativeScale = renderer.avatar.id === "builtin" || renderer.avatar.stateSupported;
+  const scale = rendererKeepsNativeScale ? 1 : Math.max(0.25, baseDimension / SIZE);
+  try {
+    renderer.window.webContents.setZoomFactor(scale);
+    renderer.window.webContents.send("window-resize", { width, height });
+  } catch (error) {
+    log(`secondary renderer scale update failed key=${renderer.key}: ${error.message}`);
+  }
+}
+
+function createSecondaryWindow(descriptor, index, primaryState) {
+  const avatar = selectedAvatarInfo(descriptor.avatarId);
+  const display = screen.getDisplayNearestPoint(primaryState);
+  const position = clampPosition(
+    primaryState.x - index * (primaryState.width + 16),
+    primaryState.y,
+    display.workArea,
+    primaryState.width,
+    primaryState.height,
+  );
+  const satellite = new BrowserWindow({
+    width: primaryState.width,
+    height: primaryState.height,
+    x: position.x,
+    y: position.y,
+    minWidth: MIN_SIZE,
+    minHeight: MIN_SIZE,
+    frame: false,
+    transparent: true,
+    resizable: true,
+    movable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    show: false,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs"),
+    },
+  });
+  const renderer = { key: descriptor.key, descriptor, avatar, window: satellite, ready: false, moveMode: false };
+  secondaryWindows.set(descriptor.key, renderer);
+  satellite.setAlwaysOnTop(true, "floating");
+  satellite.setIgnoreMouseEvents(true, { forward: true });
+  satellite.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    log(`renderer console key=${descriptor.key} level=${level} ${sourceId}:${line} ${message}`);
+  });
+  satellite.webContents.on("context-menu", (event) => event.preventDefault());
+  satellite.webContents.on("render-process-gone", (_event, details) => {
+    log(`renderer gone key=${descriptor.key} reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  satellite.webContents.on("did-fail-load", (_event, code, description) => {
+    log(`load failed key=${descriptor.key} code=${code} ${description}`);
+  });
+  log(`renderer entry key=${descriptor.key}: ${avatar.entry}`);
+  satellite.loadFile(avatar.entry);
+  satellite.webContents.once("did-finish-load", () => {
+    renderer.ready = true;
+    syncSecondaryRendererScale(renderer);
+    satellite.webContents.send("move-mode", false);
+    sendAvatarState();
+    satellite.showInactive();
+    log(`renderer loaded key=${descriptor.key}`);
+  });
+  satellite.on("resize", () => syncSecondaryRendererScale(renderer));
+  satellite.on("closed", () => {
+    renderer.ready = false;
+    secondaryWindows.delete(descriptor.key);
+  });
+}
+
 function createWindow() {
   const display = screen.getPrimaryDisplay();
   const windowState = startupPosition(display);
-  activeAvatar = selectedAvatarInfo();
-  log(`avatar selected: ${activeAvatar.id}; state bridge: ${activeAvatar.stateSupported ? "supported" : "disabled"}`);
-  startAvatarStateWatcher();
-
+  presenceDescriptors = configuredPresenceDescriptors();
+  activeDescriptor = presenceDescriptors[0];
+  foregroundWindowKey = activeDescriptor.key;
+  activeAvatar = selectedAvatarInfo(activeDescriptor.avatarId);
+  log(
+    `avatar selected key=${activeDescriptor.key}: ${activeAvatar.id}; `
+    + `state bridge: ${activeAvatar.stateSupported ? "supported" : "disabled"}; `
+    + `presence windows: ${presenceDescriptors.length}`,
+  );
   windowRef = new BrowserWindow({
     width: windowState.width,
     height: windowState.height,
@@ -510,28 +656,79 @@ function createWindow() {
     rendererReady = false;
     windowRef = null;
   });
+  presenceDescriptors.slice(1).forEach((descriptor, index) => {
+    createSecondaryWindow(descriptor, index + 1, windowState);
+  });
+  startAvatarStateWatcher();
+}
+
+function isPrimarySender(event) {
+  return Boolean(windowRef && !windowRef.isDestroyed() && event.sender.id === windowRef.webContents.id);
+}
+
+function rendererForSender(event) {
+  if (isPrimarySender(event)) {
+    return {
+      key: activeDescriptor.key,
+      descriptor: activeDescriptor,
+      avatar: activeAvatar,
+      window: windowRef,
+      ready: rendererReady,
+      primary: true,
+    };
+  }
+  for (const renderer of secondaryWindows.values()) {
+    if (!renderer.window.isDestroyed() && event.sender.id === renderer.window.webContents.id) {
+      renderer.primary = false;
+      return renderer;
+    }
+  }
+  return null;
+}
+
+function setRendererMoveMode(renderer, enabled) {
+  if (renderer.primary) {
+    setMoveMode(enabled);
+    return;
+  }
+  renderer.moveMode = Boolean(enabled);
+  renderer.window.setIgnoreMouseEvents(!renderer.moveMode, { forward: true });
+  renderer.window.webContents.send("move-mode", renderer.moveMode);
 }
 
 ipcMain.on("close-orb", () => app.quit());
-ipcMain.on("set-move-mode", (_event, enabled) => setMoveMode(enabled));
+ipcMain.on("renderer-frame-policy", (event) => {
+  event.returnValue = FRAME_POLICY;
+});
+ipcMain.on("set-move-mode", (event, enabled) => {
+  const renderer = rendererForSender(event);
+  if (renderer) setRendererMoveMode(renderer, enabled);
+});
 ipcMain.handle("voice-input-config", () => inputSettings());
-ipcMain.handle("voice-record-start", () => {
+ipcMain.handle("voice-record-start", (event) => {
+  const renderer = rendererForSender(event);
+  if (!renderer) return { ok: false, error: "avatar_window_unknown" };
   if (!inputEnabled()) {
     return { ok: false, error: "voice_input_disabled" };
   }
-  const result = runVoiceInput(["control", "capture-start"]);
-  if (windowRef && !windowRef.isDestroyed() && result.ok) {
-    windowRef.webContents.send("voice-input-state", {
+  const controlArgs = ["control", "capture-start"];
+  if (renderer.descriptor.sessionId) {
+    controlArgs.push("--target-session-id", renderer.descriptor.sessionId);
+  }
+  const result = runVoiceInput(controlArgs);
+  if (!renderer.window.isDestroyed() && result.ok) {
+    renderer.window.webContents.send("voice-input-state", {
       state: "listening",
       session_id: result.target_session_id,
       capture_sequence: result.capture_sequence,
     });
-  } else if (windowRef && !windowRef.isDestroyed() && !result.ok) {
-    windowRef.webContents.send("voice-input-state", { state: "error", error: result.error || "voice_input_failed" });
+  } else if (!renderer.window.isDestroyed() && !result.ok) {
+    renderer.window.webContents.send("voice-input-state", { state: "error", error: result.error || "voice_input_failed" });
   }
   return result;
 });
-ipcMain.handle("voice-record-finish", (_event, payload) => {
+ipcMain.handle("voice-record-finish", (event, payload) => {
+  if (!rendererForSender(event)) return { ok: false, error: "avatar_window_unknown" };
   if (!inputEnabled() || !payload || typeof payload !== "object") {
     return { ok: false, error: "voice_input_disabled" };
   }
@@ -562,8 +759,13 @@ ipcMain.handle("voice-record-finish", (_event, payload) => {
     return { ok: false, error: error.message };
   }
 });
-ipcMain.handle("voice-record-cancel", () => runVoiceInput(["control", "capture-cancel"]));
-ipcMain.on("orb-drag-start", (_event, payload) => {
+ipcMain.handle("voice-record-cancel", (event) => (
+  rendererForSender(event)
+    ? runVoiceInput(["control", "capture-cancel"])
+    : { ok: false, error: "avatar_window_unknown" }
+));
+ipcMain.on("orb-drag-start", (event, payload) => {
+  if (!isPrimarySender(event)) return;
   if (!moveMode || !windowRef || windowRef.isDestroyed()) {
     return;
   }
@@ -574,7 +776,8 @@ ipcMain.on("orb-drag-start", (_event, payload) => {
   const [x, y] = windowRef.getPosition();
   dragState = { offsetX: point.x - x, offsetY: point.y - y };
 });
-ipcMain.on("orb-drag", (_event, payload) => {
+ipcMain.on("orb-drag", (event, payload) => {
+  if (!isPrimarySender(event)) return;
   if (!moveMode || !dragState || !windowRef || windowRef.isDestroyed()) {
     return;
   }
@@ -593,12 +796,14 @@ ipcMain.on("orb-drag", (_event, payload) => {
   );
   windowRef.setPosition(position.x, position.y);
 });
-ipcMain.on("orb-drag-end", () => {
+ipcMain.on("orb-drag-end", (event) => {
+  if (!isPrimarySender(event)) return;
   writeCurrentWindowState();
   dragState = null;
 });
 
-ipcMain.on("orb-resize-start", (_event, payload) => {
+ipcMain.on("orb-resize-start", (event, payload) => {
+  if (!isPrimarySender(event)) return;
   if (!windowRef || windowRef.isDestroyed()) {
     return;
   }
@@ -619,7 +824,8 @@ ipcMain.on("orb-resize-start", (_event, payload) => {
   log("resize mode: on");
 });
 
-ipcMain.on("orb-resize", (_event, payload) => {
+ipcMain.on("orb-resize", (event, payload) => {
+  if (!isPrimarySender(event)) return;
   if (!resizeState || !windowRef || windowRef.isDestroyed()) {
     return;
   }
@@ -634,7 +840,8 @@ ipcMain.on("orb-resize", (_event, payload) => {
   scheduleWindowStateWrite();
 });
 
-ipcMain.on("orb-resize-end", () => {
+ipcMain.on("orb-resize-end", (event) => {
+  if (!isPrimarySender(event)) return;
   if (!resizeState) {
     return;
   }

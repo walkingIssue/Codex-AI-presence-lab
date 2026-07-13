@@ -1,0 +1,26 @@
+{
+  "schema": "codex-ai-presence/profiles/v0.1",
+  "project_profile_id": "sol",
+  "profiles": {
+    "sol": {
+      "avatar_id": "builtin",
+      "voice": "af_heart",
+      "speed": 1.0,
+      "mode": "stream"
+    },
+    "luna": {
+      "avatar_id": "higan-live2d",
+      "voice": "bf_isabella",
+      "speed": 1.2,
+      "mode": "stream"
+    }
+  },
+  "sessions": {
+    "session-sol": {
+      "profile_id": "sol"
+    },
+    "session-luna": {
+      "profile_id": "luna"
+    }
+  }
+}

@@ -2,6 +2,9 @@
 
 Development source and release-validation workspace for [Codex AI Presence](https://github.com/walkingIssue/Codex-AI-presence).
 
+Current Sol-lane renderer/profile work and measured CPU results are recorded in
+[`docs/SOL-ATTENTION-ORBITER-IMPLEMENTATION.md`](docs/SOL-ATTENTION-ORBITER-IMPLEMENTATION.md).
+
 This repository is intentionally richer than the distributable skill. It holds the roadmap, experiments, release projection, and end-to-end checks. The release repository remains the clean surface that users install.
 
 ## Repository roles
