@@ -43,7 +43,12 @@ gpu_patch/*.onnx
 sessions.json
 avatar-selection.json
 avatar-state.json
+avatar-states.json
 avatar-state-status.json
+avatar-state-statuses.json
+.avatar-state.json.*.tmp
+.avatar-states.json.*.tmp
+avatar-state-statuses.json.tmp
 presence-profiles.json
 input.json
 inbox.sqlite3*
@@ -56,6 +61,7 @@ ORB_FILES = (
     "main.cjs",
     "preload.cjs",
     "presence_windows.cjs",
+    "voice_control.cjs",
     "renderer.js",
     "styles.css",
     "package.json",

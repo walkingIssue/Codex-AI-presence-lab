@@ -1,10 +1,10 @@
 const { app, BrowserWindow, ipcMain, screen, session } = require("electron");
-const { spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
 const fs = require("node:fs");
 const path = require("node:path");
-const { framePolicyFromEnvironment } = require("./frame_policy.cjs");
-const { routeWindowKeys, windowDescriptors } = require("./presence_windows.cjs");
+const { framePolicyArgument, framePolicyFromEnvironment } = require("./frame_policy.cjs");
+const { avatarStateForWindow, routeWindowKeys, windowDescriptors } = require("./presence_windows.cjs");
+const { createVoiceControlRunner } = require("./voice_control.cjs");
 
 const PORT = Number(process.env.CODEX_ORB_PORT || 17831);
 const SIZE = 440;
@@ -19,19 +19,24 @@ const AVATAR_SOURCE_ROOT = path.join(PROJECT_ROOT, ".codex-voice-avatars");
 const AVATAR_SELECTION_PATH = path.join(VOICE_ROOT, "avatar-selection.json");
 const PRESENCE_PROFILES_PATH = path.join(VOICE_ROOT, "presence-profiles.json");
 const AVATAR_STATE_PATH = path.join(VOICE_ROOT, "avatar-state.json");
+const AVATAR_STATES_PATH = path.join(VOICE_ROOT, "avatar-states.json");
 const AVATAR_STATUS_PATH = path.join(VOICE_ROOT, "avatar-state-status.json");
+const AVATAR_STATUSES_PATH = path.join(VOICE_ROOT, "avatar-state-statuses.json");
 const INPUT_SETTINGS_PATH = path.join(VOICE_ROOT, "input.json");
 const INPUT_RECORDINGS_ROOT = path.join(VOICE_ROOT, "inbox", "recordings");
 const AVATAR_STATE_SCHEMA = "codex-ai-presence/avatar-state/v0.1";
+const ROUTE_AVATAR_STATE_SCHEMA = "codex-ai-presence/avatar-state/v0.2";
+const AVATAR_STATE_LEDGER_SCHEMA = "codex-ai-presence/avatar-state-ledger/v0.1";
+const AVATAR_STATUS_LEDGER_SCHEMA = "codex-ai-presence/avatar-state-status-ledger/v0.1";
 const AVATAR_STATE_CAPABILITY = "avatar-state-v1";
 const ACTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const SOURCE_PATTERN = /^[A-Za-z0-9._:-]{1,80}$/;
 const MAX_ACTIONS = 128;
 const FRAME_POLICY = framePolicyFromEnvironment();
+const FRAME_POLICY_ARGUMENT = framePolicyArgument(FRAME_POLICY);
 let windowRef = null;
 let socket = null;
 let moveMode = false;
-let dragState = null;
 let rendererReady = false;
 let avatarStateWatcher = false;
 let activeAvatar = null;
@@ -39,10 +44,12 @@ let activeDescriptor = null;
 let presenceDescriptors = [];
 let foregroundWindowKey = null;
 const secondaryWindows = new Map();
-let acceptedAvatarState = null;
+let acceptedProjectAvatarState = null;
+const acceptedRouteAvatarStates = new Map();
 const lastAvatarRevisions = new Map();
-let windowStateWriteTimer = null;
-let resizeState = null;
+const windowStateWriteTimers = new Map();
+const dragStates = new Map();
+const resizeStates = new Map();
 
 function inputSettings() {
   try {
@@ -57,33 +64,19 @@ function inputEnabled() {
   return inputSettings().input_enabled === true;
 }
 
-function runVoiceInput(args) {
-  const python = process.platform === "win32"
+const runVoiceInput = createVoiceControlRunner({
+  python: process.platform === "win32"
     ? path.join(VOICE_ROOT, ".venv", "Scripts", "python.exe")
-    : path.join(VOICE_ROOT, ".venv", "bin", "python");
-  const script = path.join(VOICE_ROOT, "voice_input.py");
-  if (!fs.existsSync(python) || !fs.existsSync(script)) {
-    return { ok: false, error: "voice_input_runtime_missing" };
-  }
-  const result = spawnSync(python, [script, "--voice-root", VOICE_ROOT, ...args], {
-    cwd: PROJECT_ROOT,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 5000,
-  });
-  const lines = String(result.stdout || "").trim().split(/\r?\n/).filter(Boolean);
-  try {
-    return lines.length ? JSON.parse(lines[lines.length - 1]) : { ok: false, error: "voice_input_no_response" };
-  } catch (_) {
-    return { ok: false, error: String(result.stderr || "voice_input_failed").trim() };
-  }
-}
+    : path.join(VOICE_ROOT, ".venv", "bin", "python"),
+  script: path.join(VOICE_ROOT, "voice_input.py"),
+  voiceRoot: VOICE_ROOT,
+  projectRoot: PROJECT_ROOT,
+});
 
 function recordingPath(recordingId) {
   if (typeof recordingId !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(recordingId)) {
     throw new Error("invalid recording id");
   }
-  fs.mkdirSync(INPUT_RECORDINGS_ROOT, { recursive: true });
   const candidate = path.resolve(INPUT_RECORDINGS_ROOT, `${recordingId}.webm`);
   if (!isWithin(path.resolve(INPUT_RECORDINGS_ROOT), candidate)) {
     throw new Error("recording escaped the input boundary");
@@ -201,10 +194,42 @@ function writeAvatarStatus(reason, state, accepted) {
     reason,
     revision: Number.isInteger(state?.revision) ? state.revision : null,
     action_count: Array.isArray(state?.actions) ? state.actions.length : 0,
+    scope: state?.scope || null,
+    session_id: state?.session_id || null,
+    profile_id: state?.profile_id || null,
+    route_key: state?.route_key || null,
     updated_at: new Date().toISOString(),
   };
   try {
     fs.writeFileSync(AVATAR_STATUS_PATH, `${JSON.stringify(status, null, 2)}\n`, "utf8");
+    if (status.route_key) {
+      let ledger = null;
+      try {
+        ledger = JSON.parse(fs.readFileSync(AVATAR_STATUSES_PATH, "utf8"));
+      } catch (_) {
+        // The first routed status creates its owned diagnostics ledger.
+      }
+      if (
+        !ledger
+        || ledger.schema !== AVATAR_STATUS_LEDGER_SCHEMA
+        || ledger.type !== "avatar-state-status-ledger"
+        || !ledger.statuses
+        || typeof ledger.statuses !== "object"
+        || Array.isArray(ledger.statuses)
+      ) {
+        ledger = {
+          schema: AVATAR_STATUS_LEDGER_SCHEMA,
+          type: "avatar-state-status-ledger",
+          statuses: {},
+        };
+      }
+      ledger.statuses[status.route_key] = status;
+      ledger.updated_at = status.updated_at;
+      const temporary = `${AVATAR_STATUSES_PATH}.tmp`;
+      fs.writeFileSync(temporary, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+      fs.copyFileSync(temporary, AVATAR_STATUSES_PATH);
+      fs.unlinkSync(temporary);
+    }
   } catch (error) {
     log(`avatar status write failed: ${error.message}`);
   }
@@ -214,7 +239,7 @@ function parseAvatarState(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("avatar state must be a JSON object");
   }
-  if (value.schema !== AVATAR_STATE_SCHEMA || value.type !== "avatar-state") {
+  if (![AVATAR_STATE_SCHEMA, ROUTE_AVATAR_STATE_SCHEMA].includes(value.schema) || value.type !== "avatar-state") {
     throw new Error("unsupported avatar state schema");
   }
   if (typeof value.avatar_id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(value.avatar_id)) {
@@ -223,8 +248,26 @@ function parseAvatarState(value) {
   if (typeof value.source !== "string" || !SOURCE_PATTERN.test(value.source)) {
     throw new Error("avatar state has an invalid source");
   }
-  if (value.scope !== "project") {
-    throw new Error("avatar state scope must be project");
+  if (value.scope === "project") {
+    if (value.schema !== AVATAR_STATE_SCHEMA) {
+      throw new Error("project avatar state must use the v0.1 schema");
+    }
+  } else if (value.scope === "route") {
+    if (value.schema !== ROUTE_AVATAR_STATE_SCHEMA) {
+      throw new Error("routed avatar state must use the v0.2 schema");
+    }
+    if (typeof value.session_id !== "string" || !value.session_id) {
+      throw new Error("routed avatar state has an invalid session_id");
+    }
+    if (typeof value.profile_id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(value.profile_id)) {
+      throw new Error("routed avatar state has an invalid profile_id");
+    }
+    const expectedRoute = `session:${value.session_id}|profile:${value.profile_id}`;
+    if (value.route_key !== expectedRoute) {
+      throw new Error("routed avatar state has an invalid route_key");
+    }
+  } else {
+    throw new Error("avatar state scope must be project or route");
   }
   if (typeof value.issued_at !== "string" || !value.issued_at || Number.isNaN(Date.parse(value.issued_at))) {
     throw new Error("avatar state issued_at must be an ISO-8601 timestamp");
@@ -253,41 +296,42 @@ function rendererWindows() {
   if (windowRef && !windowRef.isDestroyed() && activeDescriptor && activeAvatar) {
     renderers.push({
       key: activeDescriptor.key,
+      descriptor: activeDescriptor,
       avatar: activeAvatar,
       window: windowRef,
       ready: rendererReady,
+      moveMode,
+      primary: true,
     });
   }
   renderers.push(...secondaryWindows.values());
   return renderers;
 }
 
-function sendAvatarState() {
-  if (!acceptedAvatarState) return;
-  for (const renderer of rendererWindows()) {
-    if (renderer.ready && renderer.avatar.id === acceptedAvatarState.avatar_id && !renderer.window.isDestroyed()) {
-      renderer.window.webContents.send("avatar-state", acceptedAvatarState);
+function rendererForKey(key) {
+  return rendererWindows().find((renderer) => renderer.key === key) || null;
+}
+
+function avatarStateForRenderer(renderer) {
+  return avatarStateForWindow(
+    renderer.descriptor,
+    renderer.avatar.id,
+    acceptedRouteAvatarStates,
+    acceptedProjectAvatarState,
+  );
+}
+
+function sendAvatarState(targetRenderer = null) {
+  const renderers = targetRenderer ? [targetRenderer] : rendererWindows();
+  for (const renderer of renderers) {
+    const state = avatarStateForRenderer(renderer);
+    if (state && renderer.ready && !renderer.window.isDestroyed()) {
+      renderer.window.webContents.send("avatar-state", state);
     }
   }
 }
 
-function loadAvatarState() {
-  let raw;
-  try {
-    if (fs.statSync(AVATAR_STATE_PATH).size > 64 * 1024) {
-      throw new Error("avatar state exceeds the 64 KiB limit");
-    }
-    raw = JSON.parse(fs.readFileSync(AVATAR_STATE_PATH, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      writeAvatarStatus("missing", null, false);
-      return;
-    }
-    writeAvatarStatus("invalid-json", null, false);
-    log(`avatar state read failed: ${error.message}`);
-    return;
-  }
-
+function acceptAvatarState(raw) {
   let state;
   try {
     state = parseAvatarState(raw);
@@ -296,7 +340,10 @@ function loadAvatarState() {
     log(`avatar state rejected: ${error.message}`);
     return;
   }
-  const stateRenderers = rendererWindows().filter((renderer) => renderer.avatar.id === state.avatar_id);
+  const stateRenderers = rendererWindows().filter((renderer) => (
+    renderer.avatar.id === state.avatar_id
+    && (state.scope !== "route" || renderer.key === state.route_key)
+  ));
   if (!stateRenderers.length) {
     writeAvatarStatus("avatar-mismatch", state, false);
     return;
@@ -305,19 +352,69 @@ function loadAvatarState() {
     writeAvatarStatus("unsupported-capability", state, false);
     return;
   }
-  const lastRevision = lastAvatarRevisions.get(state.source);
+  const revisionKey = `${state.scope}:${state.route_key || "project"}:${state.avatar_id}:${state.source}`;
+  const lastRevision = lastAvatarRevisions.get(revisionKey);
   if (lastRevision !== undefined && state.revision <= lastRevision) {
-    if (state.revision === lastRevision && acceptedAvatarState?.source === state.source) {
-      writeAvatarStatus("accepted", acceptedAvatarState, true);
+    const acceptedState = state.scope === "route"
+      ? acceptedRouteAvatarStates.get(state.route_key)
+      : acceptedProjectAvatarState;
+    if (state.revision === lastRevision && acceptedState?.source === state.source) {
+      writeAvatarStatus("accepted", acceptedState, true);
       return;
     }
     writeAvatarStatus("stale-revision", state, false);
     return;
   }
-  lastAvatarRevisions.set(state.source, state.revision);
-  acceptedAvatarState = state;
+  lastAvatarRevisions.set(revisionKey, state.revision);
+  if (state.scope === "route") acceptedRouteAvatarStates.set(state.route_key, state);
+  else acceptedProjectAvatarState = state;
   writeAvatarStatus("accepted", state, true);
-  sendAvatarState();
+  if (state.scope === "route") stateRenderers.forEach((renderer) => sendAvatarState(renderer));
+  else sendAvatarState();
+}
+
+function loadAvatarState() {
+  try {
+    if (fs.statSync(AVATAR_STATE_PATH).size > 64 * 1024) {
+      throw new Error("avatar state exceeds the 64 KiB limit");
+    }
+    acceptAvatarState(JSON.parse(fs.readFileSync(AVATAR_STATE_PATH, "utf8")));
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    writeAvatarStatus("invalid-json", null, false);
+    log(`avatar state read failed: ${error.message}`);
+  }
+}
+
+function loadRoutedAvatarStates() {
+  try {
+    if (fs.statSync(AVATAR_STATES_PATH).size > 512 * 1024) {
+      throw new Error("routed avatar state exceeds the 512 KiB limit");
+    }
+    const ledger = JSON.parse(fs.readFileSync(AVATAR_STATES_PATH, "utf8"));
+    if (
+      ledger?.schema !== AVATAR_STATE_LEDGER_SCHEMA
+      || ledger?.type !== "avatar-state-ledger"
+      || !ledger.states
+      || typeof ledger.states !== "object"
+      || Array.isArray(ledger.states)
+    ) {
+      throw new Error("routed avatar-state ledger is invalid");
+    }
+    const states = Object.entries(ledger.states)
+      .map(([routeKey, value]) => ({ routeKey, value }))
+      .sort((left, right) => String(left.value?.issued_at || "").localeCompare(String(right.value?.issued_at || "")));
+    for (const { routeKey, value } of states) {
+      if (value?.route_key !== routeKey) {
+        throw new Error("routed avatar-state ledger key mismatch");
+      }
+      acceptAvatarState(value);
+    }
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    writeAvatarStatus("invalid-route-ledger", null, false);
+    log(`routed avatar state read failed: ${error.message}`);
+  }
 }
 
 function startAvatarStateWatcher() {
@@ -326,7 +423,9 @@ function startAvatarStateWatcher() {
   }
   avatarStateWatcher = true;
   fs.watchFile(AVATAR_STATE_PATH, { persistent: false, interval: 200 }, loadAvatarState);
+  fs.watchFile(AVATAR_STATES_PATH, { persistent: false, interval: 200 }, loadRoutedAvatarStates);
   loadAvatarState();
+  loadRoutedAvatarStates();
 }
 
 function stopAvatarStateWatcher() {
@@ -334,6 +433,7 @@ function stopAvatarStateWatcher() {
     return;
   }
   fs.unwatchFile(AVATAR_STATE_PATH, loadAvatarState);
+  fs.unwatchFile(AVATAR_STATES_PATH, loadRoutedAvatarStates);
   avatarStateWatcher = false;
 }
 
@@ -351,35 +451,61 @@ function clampPosition(x, y, workArea, width = SIZE, height = SIZE) {
   };
 }
 
-function readSavedWindowState() {
+function normalizedWindowState(value) {
+  if (!value || typeof value !== "object" || !Number.isFinite(value.x) || !Number.isFinite(value.y)) {
+    return null;
+  }
+  return {
+    x: Math.round(value.x),
+    y: Math.round(value.y),
+    width: normalizeWindowDimension(value.width),
+    height: normalizeWindowDimension(value.height),
+  };
+}
+
+function readSavedWindowStateDocument() {
   try {
     const value = JSON.parse(fs.readFileSync(POSITION_PATH, "utf8"));
-    if (Number.isFinite(value.x) && Number.isFinite(value.y)) {
-      return {
-        x: value.x,
-        y: value.y,
-        width: normalizeWindowDimension(value.width),
-        height: normalizeWindowDimension(value.height),
-      };
+    if (value?.version === 3 && value.windows && typeof value.windows === "object" && !Array.isArray(value.windows)) {
+      return value;
     }
+    const legacy = normalizedWindowState(value);
+    return legacy ? { version: 2, legacy } : { version: 3, windows: {} };
   } catch (_) {
     // Missing or malformed position state falls back to the default location.
   }
-  return null;
+  return { version: 3, windows: {} };
 }
 
-function writeWindowState(x, y, width, height) {
+function savedWindowState(routeKey, { allowLegacy = false } = {}) {
+  const document = readSavedWindowStateDocument();
+  const routed = document.version === 3 ? normalizedWindowState(document.windows?.[routeKey]) : null;
+  return routed || (allowLegacy ? document.legacy || null : null);
+}
+
+function writeRendererWindowState(renderer) {
+  if (!renderer || renderer.window.isDestroyed()) return;
   try {
+    const document = readSavedWindowStateDocument();
+    const windows = document.version === 3 && document.windows && typeof document.windows === "object"
+      ? { ...document.windows }
+      : {};
+    const [x, y] = renderer.window.getPosition();
+    const [width, height] = renderer.window.getSize();
+    windows[renderer.key] = {
+      x,
+      y,
+      width: normalizeWindowDimension(width),
+      height: normalizeWindowDimension(height),
+      updatedAt: new Date().toISOString(),
+    };
     const temporary = `${POSITION_PATH}.tmp`;
     fs.writeFileSync(
       temporary,
       `${JSON.stringify(
         {
-          version: 2,
-          x,
-          y,
-          width: normalizeWindowDimension(width),
-          height: normalizeWindowDimension(height),
+          version: 3,
+          windows,
           updatedAt: new Date().toISOString(),
         },
         null,
@@ -394,27 +520,20 @@ function writeWindowState(x, y, width, height) {
   }
 }
 
-function writeCurrentWindowState() {
-  if (!windowRef || windowRef.isDestroyed()) {
-    return;
+function scheduleRendererWindowStateWrite(renderer) {
+  const existing = windowStateWriteTimers.get(renderer.key);
+  if (existing !== undefined) {
+    clearTimeout(existing);
   }
-  const [x, y] = windowRef.getPosition();
-  const [width, height] = windowRef.getSize();
-  writeWindowState(x, y, width, height);
-}
-
-function scheduleWindowStateWrite() {
-  if (windowStateWriteTimer !== null) {
-    clearTimeout(windowStateWriteTimer);
-  }
-  windowStateWriteTimer = setTimeout(() => {
-    windowStateWriteTimer = null;
-    writeCurrentWindowState();
+  const timer = setTimeout(() => {
+    windowStateWriteTimers.delete(renderer.key);
+    writeRendererWindowState(renderer);
   }, 120);
+  windowStateWriteTimers.set(renderer.key, timer);
 }
 
-function startupPosition(primaryDisplay) {
-  const saved = readSavedWindowState();
+function startupPosition(primaryDisplay, descriptor, index = 0, primaryState = null) {
+  const saved = savedWindowState(descriptor.key, { allowLegacy: index === 0 });
   const width = saved?.width || SIZE;
   const height = saved?.height || SIZE;
   if (saved) {
@@ -423,6 +542,16 @@ function startupPosition(primaryDisplay) {
     return { ...position, width, height };
   }
   const workArea = primaryDisplay.workArea;
+  if (primaryState && index > 0) {
+    const position = clampPosition(
+      primaryState.x - index * (primaryState.width + 16),
+      primaryState.y,
+      workArea,
+      primaryState.width,
+      primaryState.height,
+    );
+    return { ...position, width: primaryState.width, height: primaryState.height };
+  }
   const position = clampPosition(
     workArea.x + workArea.width - width - DEFAULT_MARGIN,
     workArea.y + workArea.height - height - DEFAULT_MARGIN,
@@ -431,16 +560,6 @@ function startupPosition(primaryDisplay) {
     height,
   );
   return { ...position, width, height };
-}
-
-function setMoveMode(enabled) {
-  moveMode = Boolean(enabled);
-  dragState = null;
-  if (windowRef && !windowRef.isDestroyed()) {
-    windowRef.setIgnoreMouseEvents(!moveMode, { forward: true });
-    windowRef.webContents.send("move-mode", moveMode);
-  }
-  log(`move mode: ${moveMode ? "on" : "off"}`);
 }
 
 function pointFromPayload(payload) {
@@ -523,18 +642,12 @@ function syncSecondaryRendererScale(renderer) {
 function createSecondaryWindow(descriptor, index, primaryState) {
   const avatar = selectedAvatarInfo(descriptor.avatarId);
   const display = screen.getDisplayNearestPoint(primaryState);
-  const position = clampPosition(
-    primaryState.x - index * (primaryState.width + 16),
-    primaryState.y,
-    display.workArea,
-    primaryState.width,
-    primaryState.height,
-  );
+  const windowState = startupPosition(display, descriptor, index, primaryState);
   const satellite = new BrowserWindow({
-    width: primaryState.width,
-    height: primaryState.height,
-    x: position.x,
-    y: position.y,
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
     minWidth: MIN_SIZE,
     minHeight: MIN_SIZE,
     frame: false,
@@ -550,9 +663,18 @@ function createSecondaryWindow(descriptor, index, primaryState) {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.cjs"),
+      additionalArguments: [FRAME_POLICY_ARGUMENT],
     },
   });
-  const renderer = { key: descriptor.key, descriptor, avatar, window: satellite, ready: false, moveMode: false };
+  const renderer = {
+    key: descriptor.key,
+    descriptor,
+    avatar,
+    window: satellite,
+    ready: false,
+    moveMode: false,
+    primary: false,
+  };
   secondaryWindows.set(descriptor.key, renderer);
   satellite.setAlwaysOnTop(true, "floating");
   satellite.setIgnoreMouseEvents(true, { forward: true });
@@ -572,12 +694,21 @@ function createSecondaryWindow(descriptor, index, primaryState) {
     renderer.ready = true;
     syncSecondaryRendererScale(renderer);
     satellite.webContents.send("move-mode", false);
-    sendAvatarState();
+    sendAvatarState(renderer);
     satellite.showInactive();
     log(`renderer loaded key=${descriptor.key}`);
   });
-  satellite.on("resize", () => syncSecondaryRendererScale(renderer));
+  satellite.on("resize", () => {
+    syncSecondaryRendererScale(renderer);
+    scheduleRendererWindowStateWrite(renderer);
+  });
+  satellite.on("move", () => scheduleRendererWindowStateWrite(renderer));
   satellite.on("closed", () => {
+    const timer = windowStateWriteTimers.get(renderer.key);
+    if (timer !== undefined) clearTimeout(timer);
+    windowStateWriteTimers.delete(renderer.key);
+    dragStates.delete(renderer.key);
+    resizeStates.delete(renderer.key);
     renderer.ready = false;
     secondaryWindows.delete(descriptor.key);
   });
@@ -585,9 +716,9 @@ function createSecondaryWindow(descriptor, index, primaryState) {
 
 function createWindow() {
   const display = screen.getPrimaryDisplay();
-  const windowState = startupPosition(display);
   presenceDescriptors = configuredPresenceDescriptors();
   activeDescriptor = presenceDescriptors[0];
+  const windowState = startupPosition(display, activeDescriptor);
   foregroundWindowKey = activeDescriptor.key;
   activeAvatar = selectedAvatarInfo(activeDescriptor.avatarId);
   log(
@@ -615,6 +746,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.cjs"),
+      additionalArguments: [FRAME_POLICY_ARGUMENT],
     },
   });
 
@@ -639,20 +771,27 @@ function createWindow() {
     rendererReady = true;
     syncRendererScale();
     windowRef.webContents.send("move-mode", moveMode);
-    sendAvatarState();
+    sendAvatarState(rendererForKey(activeDescriptor.key));
     windowRef.showInactive();
   });
   windowRef.on("resize", () => {
     syncRendererScale();
-    scheduleWindowStateWrite();
+    const renderer = rendererForKey(activeDescriptor.key);
+    if (renderer) scheduleRendererWindowStateWrite(renderer);
+  });
+  windowRef.on("move", () => {
+    const renderer = rendererForKey(activeDescriptor.key);
+    if (renderer) scheduleRendererWindowStateWrite(renderer);
   });
   windowRef.on("closed", () => {
-    if (windowStateWriteTimer !== null) {
-      clearTimeout(windowStateWriteTimer);
-      windowStateWriteTimer = null;
+    const key = activeDescriptor?.key;
+    const timer = key ? windowStateWriteTimers.get(key) : undefined;
+    if (timer !== undefined) clearTimeout(timer);
+    if (key) {
+      windowStateWriteTimers.delete(key);
+      dragStates.delete(key);
+      resizeStates.delete(key);
     }
-    dragState = null;
-    resizeState = null;
     rendererReady = false;
     windowRef = null;
   });
@@ -674,12 +813,12 @@ function rendererForSender(event) {
       avatar: activeAvatar,
       window: windowRef,
       ready: rendererReady,
+      moveMode,
       primary: true,
     };
   }
   for (const renderer of secondaryWindows.values()) {
     if (!renderer.window.isDestroyed() && event.sender.id === renderer.window.webContents.id) {
-      renderer.primary = false;
       return renderer;
     }
   }
@@ -687,25 +826,22 @@ function rendererForSender(event) {
 }
 
 function setRendererMoveMode(renderer, enabled) {
-  if (renderer.primary) {
-    setMoveMode(enabled);
-    return;
-  }
-  renderer.moveMode = Boolean(enabled);
-  renderer.window.setIgnoreMouseEvents(!renderer.moveMode, { forward: true });
-  renderer.window.webContents.send("move-mode", renderer.moveMode);
+  const next = Boolean(enabled);
+  if (renderer.primary) moveMode = next;
+  else renderer.moveMode = next;
+  dragStates.delete(renderer.key);
+  renderer.window.setIgnoreMouseEvents(!next, { forward: true });
+  renderer.window.webContents.send("move-mode", next);
+  log(`move mode key=${renderer.key}: ${next ? "on" : "off"}`);
 }
 
 ipcMain.on("close-orb", () => app.quit());
-ipcMain.on("renderer-frame-policy", (event) => {
-  event.returnValue = FRAME_POLICY;
-});
 ipcMain.on("set-move-mode", (event, enabled) => {
   const renderer = rendererForSender(event);
   if (renderer) setRendererMoveMode(renderer, enabled);
 });
 ipcMain.handle("voice-input-config", () => inputSettings());
-ipcMain.handle("voice-record-start", (event) => {
+ipcMain.handle("voice-record-start", async (event) => {
   const renderer = rendererForSender(event);
   if (!renderer) return { ok: false, error: "avatar_window_unknown" };
   if (!inputEnabled()) {
@@ -715,7 +851,7 @@ ipcMain.handle("voice-record-start", (event) => {
   if (renderer.descriptor.sessionId) {
     controlArgs.push("--target-session-id", renderer.descriptor.sessionId);
   }
-  const result = runVoiceInput(controlArgs);
+  const result = await runVoiceInput(controlArgs);
   if (!renderer.window.isDestroyed() && result.ok) {
     renderer.window.webContents.send("voice-input-state", {
       state: "listening",
@@ -727,7 +863,7 @@ ipcMain.handle("voice-record-start", (event) => {
   }
   return result;
 });
-ipcMain.handle("voice-record-finish", (event, payload) => {
+ipcMain.handle("voice-record-finish", async (event, payload) => {
   if (!rendererForSender(event)) return { ok: false, error: "avatar_window_unknown" };
   if (!inputEnabled() || !payload || typeof payload !== "object") {
     return { ok: false, error: "voice_input_disabled" };
@@ -741,9 +877,10 @@ ipcMain.handle("voice-record-finish", (event, payload) => {
     if (!Number.isInteger(captureSequence) || captureSequence < 1) {
       return { ok: false, error: "capture_sequence_missing" };
     }
+    await fs.promises.mkdir(INPUT_RECORDINGS_ROOT, { recursive: true });
     const destination = recordingPath(payload.recording_id);
-    fs.writeFileSync(destination, Buffer.from(bytes));
-    const result = runVoiceInput([
+    await fs.promises.writeFile(destination, Buffer.from(bytes));
+    const result = await runVoiceInput([
       "control",
       "capture-finish",
       "--recording",
@@ -752,41 +889,35 @@ ipcMain.handle("voice-record-finish", (event, payload) => {
       String(captureSequence),
     ]);
     if (!result.ok) {
-      fs.rmSync(destination, { force: true });
+      await fs.promises.rm(destination, { force: true });
     }
     return result;
   } catch (error) {
     return { ok: false, error: error.message };
   }
 });
-ipcMain.handle("voice-record-cancel", (event) => (
+ipcMain.handle("voice-record-cancel", async (event) => (
   rendererForSender(event)
-    ? runVoiceInput(["control", "capture-cancel"])
+    ? await runVoiceInput(["control", "capture-cancel"])
     : { ok: false, error: "avatar_window_unknown" }
 ));
 ipcMain.on("orb-drag-start", (event, payload) => {
-  if (!isPrimarySender(event)) return;
-  if (!moveMode || !windowRef || windowRef.isDestroyed()) {
-    return;
-  }
+  const renderer = rendererForSender(event);
+  if (!renderer || !renderer.moveMode || renderer.window.isDestroyed()) return;
   const point = pointFromPayload(payload);
-  if (!point) {
-    return;
-  }
-  const [x, y] = windowRef.getPosition();
-  dragState = { offsetX: point.x - x, offsetY: point.y - y };
+  if (!point) return;
+  const [x, y] = renderer.window.getPosition();
+  dragStates.set(renderer.key, { offsetX: point.x - x, offsetY: point.y - y });
 });
 ipcMain.on("orb-drag", (event, payload) => {
-  if (!isPrimarySender(event)) return;
-  if (!moveMode || !dragState || !windowRef || windowRef.isDestroyed()) {
-    return;
-  }
+  const renderer = rendererForSender(event);
+  if (!renderer || !renderer.moveMode || renderer.window.isDestroyed()) return;
+  const dragState = dragStates.get(renderer.key);
+  if (!dragState) return;
   const point = pointFromPayload(payload);
-  if (!point) {
-    return;
-  }
+  if (!point) return;
   const display = screen.getDisplayNearestPoint(point);
-  const [width, height] = windowRef.getSize();
+  const [width, height] = renderer.window.getSize();
   const position = clampPosition(
     point.x - dragState.offsetX,
     point.y - dragState.offsetY,
@@ -794,61 +925,53 @@ ipcMain.on("orb-drag", (event, payload) => {
     width,
     height,
   );
-  windowRef.setPosition(position.x, position.y);
+  renderer.window.setPosition(position.x, position.y);
 });
 ipcMain.on("orb-drag-end", (event) => {
-  if (!isPrimarySender(event)) return;
-  writeCurrentWindowState();
-  dragState = null;
+  const renderer = rendererForSender(event);
+  if (!renderer) return;
+  writeRendererWindowState(renderer);
+  dragStates.delete(renderer.key);
 });
 
 ipcMain.on("orb-resize-start", (event, payload) => {
-  if (!isPrimarySender(event)) return;
-  if (!windowRef || windowRef.isDestroyed()) {
-    return;
-  }
+  const renderer = rendererForSender(event);
+  if (!renderer || renderer.window.isDestroyed()) return;
   const point = pointFromPayload(payload);
-  if (!point) {
-    return;
-  }
-  const [width, height] = windowRef.getSize();
-  resizeState = {
+  if (!point) return;
+  const [width, height] = renderer.window.getSize();
+  resizeStates.set(renderer.key, {
     startX: point.x,
     startY: point.y,
     startWidth: width,
     startHeight: height,
-  };
-  moveMode = true;
-  windowRef.setIgnoreMouseEvents(false);
-  windowRef.webContents.send("move-mode", true);
-  log("resize mode: on");
+  });
+  setRendererMoveMode(renderer, true);
+  log(`resize mode key=${renderer.key}: on`);
 });
 
 ipcMain.on("orb-resize", (event, payload) => {
-  if (!isPrimarySender(event)) return;
-  if (!resizeState || !windowRef || windowRef.isDestroyed()) {
-    return;
-  }
+  const renderer = rendererForSender(event);
+  if (!renderer || renderer.window.isDestroyed()) return;
+  const resizeState = resizeStates.get(renderer.key);
+  if (!resizeState) return;
   const point = pointFromPayload(payload);
-  if (!point) {
-    return;
-  }
+  if (!point) return;
   const width = Math.max(MIN_SIZE, resizeState.startWidth + point.x - resizeState.startX);
   const height = Math.max(MIN_SIZE, resizeState.startHeight + point.y - resizeState.startY);
-  windowRef.setSize(Math.round(width), Math.round(height));
-  syncRendererScale();
-  scheduleWindowStateWrite();
+  renderer.window.setSize(Math.round(width), Math.round(height));
+  if (renderer.primary) syncRendererScale();
+  else syncSecondaryRendererScale(renderer);
+  scheduleRendererWindowStateWrite(renderer);
 });
 
 ipcMain.on("orb-resize-end", (event) => {
-  if (!isPrimarySender(event)) return;
-  if (!resizeState) {
-    return;
-  }
-  writeCurrentWindowState();
-  resizeState = null;
-  setMoveMode(false);
-  log("resize mode: off");
+  const renderer = rendererForSender(event);
+  if (!renderer || !resizeStates.has(renderer.key)) return;
+  writeRendererWindowState(renderer);
+  resizeStates.delete(renderer.key);
+  setRendererMoveMode(renderer, false);
+  log(`resize mode key=${renderer.key}: off`);
 });
 
 app.whenReady().then(() => {
@@ -862,8 +985,10 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", () => {
-  writeCurrentWindowState();
-  setMoveMode(false);
+  for (const renderer of rendererWindows()) {
+    writeRendererWindowState(renderer);
+    setRendererMoveMode(renderer, false);
+  }
   stopAvatarStateWatcher();
   rendererReady = false;
   if (socket) {

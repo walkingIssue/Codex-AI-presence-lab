@@ -6,7 +6,7 @@
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test frame_policy.test.cjs presence_windows.test.cjs"
+    "test": "node --test frame_policy.test.cjs presence_windows.test.cjs voice_control.test.cjs"
   },
   "devDependencies": {
     "electron": "43.1.0"

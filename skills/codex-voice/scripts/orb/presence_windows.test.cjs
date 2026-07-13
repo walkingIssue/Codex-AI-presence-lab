@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { routeWindowKeys, windowDescriptors } = require("./presence_windows.cjs");
+const { avatarStateForWindow, routeWindowKeys, windowDescriptors } = require("./presence_windows.cjs");
 
 test("materializes one avatar window per bound session", () => {
   const descriptors = windowDescriptors({
@@ -66,4 +66,20 @@ test("invalid profile references fail closed to the legacy renderer", () => {
       avatarId: "higan-live2d",
     }],
   );
+});
+
+test("route avatar state overrides project state only for its exact window", () => {
+  const luna = { key: "session:luna|profile:higan" };
+  const other = { key: "session:other|profile:higan" };
+  const projectState = { avatar_id: "higan-live2d", scope: "project", actions: ["project"] };
+  const routedState = {
+    avatar_id: "higan-live2d",
+    scope: "route",
+    route_key: luna.key,
+    actions: ["luna-only"],
+  };
+  const states = new Map([[luna.key, routedState]]);
+  assert.equal(avatarStateForWindow(luna, "higan-live2d", states, projectState), routedState);
+  assert.equal(avatarStateForWindow(other, "higan-live2d", states, projectState), projectState);
+  assert.equal(avatarStateForWindow(luna, "builtin", states, projectState), null);
 });

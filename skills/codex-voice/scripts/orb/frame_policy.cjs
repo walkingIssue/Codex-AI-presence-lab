@@ -2,9 +2,10 @@
 
 const DEFAULT_FRAME_POLICY = Object.freeze({
   enabled: true,
-  idleFps: 20,
-  activeFps: 30,
+  idleFps: 60,
+  activeFps: 60,
 });
+const FRAME_POLICY_ARGUMENT_PREFIX = "--codex-frame-policy=";
 
 function boundedFps(value, fallback) {
   const fps = Number(value);
@@ -31,6 +32,20 @@ function framePolicyFromEnvironment(environment = process.env) {
   });
 }
 
+function framePolicyArgument(value = {}) {
+  return `${FRAME_POLICY_ARGUMENT_PREFIX}${encodeURIComponent(JSON.stringify(normalizeFramePolicy(value)))}`;
+}
+
+function framePolicyFromArguments(args = []) {
+  const encoded = args.find((value) => typeof value === "string" && value.startsWith(FRAME_POLICY_ARGUMENT_PREFIX));
+  if (!encoded) return normalizeFramePolicy();
+  try {
+    return normalizeFramePolicy(JSON.parse(decodeURIComponent(encoded.slice(FRAME_POLICY_ARGUMENT_PREFIX.length))));
+  } catch (_) {
+    return normalizeFramePolicy();
+  }
+}
+
 // This function is serialized by contextBridge.executeInMainWorld. Keep it
 // self-contained: closure state and module imports are intentionally unavailable.
 function installFrameScheduler(idleFps, activeFps) {
@@ -42,8 +57,8 @@ function installFrameScheduler(idleFps, activeFps) {
   const pending = new Map();
   let nextRequestId = 1;
   let mode = "idle";
-  let idle = Math.max(1, Math.min(60, Number(idleFps) || 20));
-  let active = Math.max(idle, Math.min(60, Number(activeFps) || 30));
+  let idle = Math.max(1, Math.min(60, Number(idleFps) || 60));
+  let active = Math.max(idle, Math.min(60, Number(activeFps) || 60));
 
   function requestAnimationFrameAtBudget(callback) {
     if (typeof callback !== "function") {
@@ -119,6 +134,8 @@ function setFrameSchedulerMode(mode) {
 
 module.exports = {
   DEFAULT_FRAME_POLICY,
+  framePolicyArgument,
+  framePolicyFromArguments,
   framePolicyFromEnvironment,
   installFrameScheduler,
   normalizeFramePolicy,

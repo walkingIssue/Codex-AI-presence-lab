@@ -1,6 +1,6 @@
 ---
 manifest_schema: 1
-manifest_revision: 2026-07-13-stateful-attention-updates
+manifest_revision: 2026-07-13-routed-avatar-windows
 release_unit: codex-voice
 ---
 
@@ -29,8 +29,12 @@ predate a later file.
 | Avatar state writer | `.codex-voice/avatar_state.py` | Runtime-root cleanup |
 | Avatar selection | `.codex-voice/avatar-selection.json` | Runtime-root cleanup |
 | Avatar state snapshot | `.codex-voice/avatar-state.json` | Runtime-root cleanup |
+| Routed avatar state ledger | `.codex-voice/avatar-states.json` | Runtime-root cleanup |
 | Avatar state temporary writes | `.codex-voice/.avatar-state.json.*.tmp` | Runtime-root cleanup |
+| Routed avatar state temporary writes | `.codex-voice/.avatar-states.json.*.tmp` | Runtime-root cleanup |
 | Avatar state diagnostics | `.codex-voice/avatar-state-status.json` | Runtime-root cleanup |
+| Routed avatar state diagnostics | `.codex-voice/avatar-state-statuses.json` | Runtime-root cleanup |
+| Routed avatar diagnostics temporary write | `.codex-voice/avatar-state-statuses.json.tmp` | Runtime-root cleanup |
 | Presence profile manager and settings helper | `.codex-voice/{profiles.py,configuration.py}` | Runtime-root cleanup |
 | Presence profiles and session bindings | `.codex-voice/presence-profiles.json` | Runtime-root cleanup |
 | Voice lifecycle wrapper | `.codex-voice/start_voice.ps1` | Runtime-root cleanup |
@@ -74,3 +78,4 @@ predate a later file.
 | `2026-07-13-stateful-attention-updates` | Keeps real output in the durable inbox, routes commentary through a coalesced ephemeral update lane, persists the session that owns spoken attention, and retires legacy commentary rows on restart | Reuses the existing inbox/runtime-state database; no new cleanup boundary |
 | `2026-07-13-adaptive-render-budget` | Caps renderer animation work at 20 FPS idle and 30 FPS active before custom avatar scripts load; values can be overridden or disabled through `CODEX_ORB_*` environment settings | Adds host modules inside the existing `.codex-voice/orb/` boundary; no external cleanup path |
 | `2026-07-13-session-presence-profiles` | Resolves session-bound avatar and Kokoro voice/speed/mode identity at Presence Service, snapshots routing fields in the durable inbox, and materializes one Electron avatar window per bound session while retaining one playback arbiter and worker | Adds the owned `presence-profiles.json`, `profiles.py`, and `configuration.py` files inside `.codex-voice`; user avatar bundles remain protected |
+| `2026-07-13-routed-avatar-windows` | Adds independently persisted session/profile avatar state, acceptance diagnostics, and window geometry; enables drag/resize on every rendered profile; raises the default idle and active animation budgets to 60 FPS after the shared Cubism renderer optimization; and moves ordered voice-control subprocesses and recording writes off Electron's main loop while removing the synchronous frame-policy IPC handshake | Adds routed `avatar-states.json` and `avatar-state-statuses.json` ledgers inside `.codex-voice`; the async control helper remains inside the existing Orb package, and per-window geometry remains in the existing `orb-position.json` artifact and cleanup boundary |

@@ -83,4 +83,13 @@ function routeWindowKeys(descriptors, event, foregroundKey = null) {
   return foregroundKey ? [foregroundKey] : [descriptors[0].key];
 }
 
-module.exports = { routeWindowKeys, windowDescriptors };
+function avatarStateForWindow(descriptor, avatarId, routedStates, projectState = null) {
+  if (!descriptor || typeof descriptor.key !== "string") return null;
+  const routed = routedStates instanceof Map
+    ? routedStates.get(descriptor.key)
+    : routedStates?.[descriptor.key];
+  if (routed?.avatar_id === avatarId && routed?.route_key === descriptor.key) return routed;
+  return projectState?.avatar_id === avatarId ? projectState : null;
+}
+
+module.exports = { avatarStateForWindow, routeWindowKeys, windowDescriptors };

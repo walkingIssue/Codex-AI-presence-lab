@@ -9,7 +9,7 @@ Working copy: `C:\Users\Bartek\Documents\Codex-AI-presence-lab-Sol`
 This checkpoint establishes a processor-efficient multi-session presence path
 without introducing another playback owner:
 
-- Electron budgets renderer animation callbacks at 20 FPS idle and 30 FPS
+- Electron budgets renderer animation callbacks at 20 FPS idle and 60 FPS
   active before built-in or custom avatar scripts load.
 - Session presence profiles resolve `avatar_id`, Kokoro voice, speed, and mode
   at `PresenceService`.
@@ -95,13 +95,12 @@ project-wide because it owns the persistent model runtime.
 ## Current limits
 
 - Orb restart is required after profile bindings change.
-- The original primary Orb position/size is persisted; additional windows use
-  deterministic cascaded positions for this first slice.
-- Right-button voice capture works from every profile window. Drag/resize
-  persistence is still primary-window-only.
-- Avatar action snapshots remain project-scoped and are delivered to every
-  loaded window whose `avatar_id` matches. Per-profile action state is future
-  work.
+- Every session/profile window persists independent position and size, with a
+  one-time migration from the legacy primary-only geometry document.
+- Right-button voice capture and left-button drag/resize work from every
+  profile window.
+- Avatar action snapshots retain a legacy project-wide state and add exact
+  session/profile route state. A routed state never reaches another window.
 - Live2D model memory remains substantial; this checkpoint targets processor
   efficiency and shared-process rendering, not model-memory deduplication.
 

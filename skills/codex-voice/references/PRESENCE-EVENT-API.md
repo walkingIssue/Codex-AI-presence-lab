@@ -113,8 +113,9 @@ character, creature, geometric field, or any other local visual form.
 - Use `activity` for semantic state color or geometry.
 - Use move-mode notifications to show a drag affordance.
 - Smooth and decay values locally; packets are samples, not frame commands.
-- Expect the host to budget animation callbacks (20 FPS idle, 30 FPS active by
-  default); use elapsed time rather than assuming a 60 Hz update loop.
+- Expect the host to budget animation callbacks at 60 FPS by default; lower
+  environment overrides remain valid, so use elapsed time rather than assuming
+  a fixed update rate.
 - Ignore unknown event types and states for forward compatibility.
 
 The renderer must not infer or display hidden reasoning. The current voice

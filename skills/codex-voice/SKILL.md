@@ -176,14 +176,24 @@ py .codex-voice/avatar_state.py write --project-root . `
   --scope project `
   --revision 12 `
   --actions-json '["pose.sweater-default", "effect.dazed-eyes"]'
+py .codex-voice/avatar_state.py write --project-root . `
+  --avatar-id higan-live2d `
+  --source live2d-avatar-controls `
+  --scope route `
+  --session-id <session-id> `
+  --profile-id <profile-id> `
+  --revision 1 `
+  --actions-json '["pose.sweater-default"]'
 py .codex-voice/avatar_state.py status --project-root .
 py .codex-voice/avatar_state.py sync --project-root .
 ```
 
 The voice layer forwards action ids only. The avatar-control runtime owns
 action discovery, conflicts, safe defaults, and compiled model operations.
-The full state is project-scoped in v0.1; an empty action list resets the
-avatar, and older revisions are ignored.
+The legacy v0.1 state is project-scoped. Routed v0.2 states are keyed by the
+same composite session/profile route used by Presence Service, persisted in
+`avatar-states.json`, and delivered only to that exact avatar window. An empty
+action list resets the target avatar, and revisions are monotonic per route.
 
 Install and select a bundle without replacing the built-in renderer:
 
@@ -238,8 +248,8 @@ the most recent `voice-output` owner. Holding `Ctrl+Alt`/`Cmd+Alt` and the right
 mouse button on any profile avatar targets voice input to that avatar's bound
 session.
 
-The host budgets animation callbacks before renderer scripts load: 20 FPS when
-idle and 30 FPS while speaking, recording, or interacting. Override with
+The host budgets animation callbacks before renderer scripts load: 60 FPS by
+default while idle, speaking, recording, applying avatar state, or interacting. Override with
 `CODEX_ORB_IDLE_FPS` and `CODEX_ORB_ACTIVE_FPS`; set
 `CODEX_ORB_FRAME_LIMIT=off` only for renderer diagnosis.
 
@@ -268,14 +278,15 @@ python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" status
 ```
 
 When the Orb is running, hold `Ctrl+Alt` on Windows/Linux or `Cmd+Alt` on
-macOS and use the left mouse button to drag it. The position is saved per
-project; press `Escape` to cancel a move in progress. Voice input uses the
+macOS and use the left mouse button to drag any rendered profile. Each
+session/profile window saves its own position inside the project-local
+`orb-position.json`; press `Escape` to cancel a move in progress. Voice input uses the
 separate right-button hold described below.
 
 The Orb window is resizable from its native transparent surface. Hold
 `Ctrl+Alt+Shift` and drag from the lower-right corner to resize it; the gesture
 works for the built-in Strand Orb and custom avatar renderers. The size is
-saved alongside the position in `.codex-voice/orb-position.json`. The host
+saved alongside that window's routed position in `.codex-voice/orb-position.json`. The host
 forwards the exact content `{width, height}` through `window-resize`; renderers
 with `avatar-state-v1` keep Electron zoom at `1` and fit their own canvas so
 Live2D and other high-resolution avatars do not become raster-scaled. Legacy

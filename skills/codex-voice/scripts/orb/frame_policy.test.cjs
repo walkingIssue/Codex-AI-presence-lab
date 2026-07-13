@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  framePolicyArgument,
+  framePolicyFromArguments,
   framePolicyFromEnvironment,
   installFrameScheduler,
   normalizeFramePolicy,
@@ -11,6 +13,11 @@ const {
 } = require("./frame_policy.cjs");
 
 test("normalizes and bounds the frame policy", () => {
+  assert.deepEqual(normalizeFramePolicy(), {
+    enabled: true,
+    idleFps: 60,
+    activeFps: 60,
+  });
   assert.deepEqual(normalizeFramePolicy({ idleFps: 0, activeFps: 100 }), {
     enabled: true,
     idleFps: 1,
@@ -20,6 +27,20 @@ test("normalizes and bounds the frame policy", () => {
     enabled: true,
     idleFps: 40,
     activeFps: 40,
+  });
+});
+
+test("passes the immutable policy to preload without synchronous IPC", () => {
+  const argument = framePolicyArgument({ enabled: false, idleFps: 24, activeFps: 48 });
+  assert.deepEqual(framePolicyFromArguments(["electron", argument]), {
+    enabled: false,
+    idleFps: 24,
+    activeFps: 48,
+  });
+  assert.deepEqual(framePolicyFromArguments(["--codex-frame-policy=not-json"]), {
+    enabled: true,
+    idleFps: 60,
+    activeFps: 60,
   });
 });
 

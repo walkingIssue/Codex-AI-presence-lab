@@ -11,8 +11,8 @@ function installFrameScheduler(idleFps, activeFps) {
   const pending = new Map();
   let nextRequestId = 1;
   let mode = "idle";
-  let idle = Math.max(1, Math.min(60, Number(idleFps) || 20));
-  let active = Math.max(idle, Math.min(60, Number(activeFps) || 30));
+  let idle = Math.max(1, Math.min(60, Number(idleFps) || 60));
+  let active = Math.max(idle, Math.min(60, Number(activeFps) || 60));
 
   function requestAnimationFrameAtBudget(callback) {
     if (typeof callback !== "function") {
@@ -81,7 +81,21 @@ function setFrameSchedulerMode(mode) {
   return window.__codexPresenceFrameScheduler?.setMode(mode) ?? "unavailable";
 }
 
-const framePolicy = ipcRenderer.sendSync("renderer-frame-policy");
+function framePolicyFromArguments(args = []) {
+  const prefix = "--codex-frame-policy=";
+  const encoded = args.find((value) => typeof value === "string" && value.startsWith(prefix));
+  if (!encoded) return { enabled: true, idleFps: 60, activeFps: 60 };
+  try {
+    const value = JSON.parse(decodeURIComponent(encoded.slice(prefix.length)));
+    return value && typeof value === "object"
+      ? value
+      : { enabled: true, idleFps: 60, activeFps: 60 };
+  } catch (_) {
+    return { enabled: true, idleFps: 60, activeFps: 60 };
+  }
+}
+
+const framePolicy = framePolicyFromArguments(process.argv);
 let frameMode = "idle";
 let frameIdleTimer = null;
 if (framePolicy?.enabled !== false) {
@@ -362,14 +376,14 @@ window.addEventListener("blur", () => finishResize(), true);
 // the left Ctrl/Cmd+Alt gesture remains movement-only; right-button hold is
 // reserved for recording.
 window.addEventListener("mousemove", (event) => {
-  if (voiceInputEnabled && gesture) {
+  if (gesture) {
     event.preventDefault();
     event.stopImmediatePropagation();
   }
 }, true);
 
 window.addEventListener("pointerdown", (event) => {
-  if (!voiceInputEnabled || event.button !== 0 || !voiceModifierHeld(event) || event.shiftKey || inResizeHandle(event)) {
+  if (event.button !== 0 || !voiceModifierHeld(event) || event.shiftKey || inResizeHandle(event)) {
     return;
   }
   clearGestureTimer();
@@ -419,7 +433,7 @@ window.addEventListener("pointerdown", (event) => {
 }, true);
 
 window.addEventListener("pointermove", (event) => {
-  if (!voiceInputEnabled || !gesture || event.pointerId !== gesture.pointerId) return;
+  if (!gesture || event.pointerId !== gesture.pointerId) return;
   if (gesture.button === 2) {
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -442,7 +456,7 @@ window.addEventListener("pointermove", (event) => {
 }, true);
 
 window.addEventListener("pointerup", (event) => {
-  if (!voiceInputEnabled || !gesture || event.pointerId !== gesture.pointerId) return;
+  if (!gesture || event.pointerId !== gesture.pointerId) return;
   if (gesture.mode === "drag") {
     ipcRenderer.send("orb-drag-end");
     gesture = null;
@@ -480,6 +494,9 @@ contextBridge.exposeInMainWorld("orbApi", {
     const listener = (_event, payload) => {
       if (payload?.type === "state") {
         applyFrameMode(payload.state === "speaking" ? "active" : "idle", payload.state === "speaking" ? 0 : 600);
+      } else if (payload?.type === "activity") {
+        const active = payload.state && payload.state !== "idle";
+        applyFrameMode(active ? "active" : "idle", active ? 0 : 600);
       }
       callback(payload);
     };
@@ -487,7 +504,11 @@ contextBridge.exposeInMainWorld("orbApi", {
     return () => ipcRenderer.removeListener("audio-event", listener);
   },
   onAvatarState(callback) {
-    const listener = (_event, payload) => callback(payload);
+    const listener = (_event, payload) => {
+      applyFrameMode("active");
+      callback(payload);
+      applyFrameMode("idle", 1000);
+    };
     ipcRenderer.on("avatar-state", listener);
     return () => ipcRenderer.removeListener("avatar-state", listener);
   },
