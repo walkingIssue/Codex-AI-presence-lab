@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, session } = require("electron");
+const { spawnSync } = require("node:child_process");
 const dgram = require("node:dgram");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -16,6 +17,8 @@ const AVATAR_SOURCE_ROOT = path.join(PROJECT_ROOT, ".codex-voice-avatars");
 const AVATAR_SELECTION_PATH = path.join(VOICE_ROOT, "avatar-selection.json");
 const AVATAR_STATE_PATH = path.join(VOICE_ROOT, "avatar-state.json");
 const AVATAR_STATUS_PATH = path.join(VOICE_ROOT, "avatar-state-status.json");
+const INPUT_SETTINGS_PATH = path.join(VOICE_ROOT, "input.json");
+const INPUT_RECORDINGS_ROOT = path.join(VOICE_ROOT, "inbox", "recordings");
 const AVATAR_STATE_SCHEMA = "codex-ai-presence/avatar-state/v0.1";
 const AVATAR_STATE_CAPABILITY = "avatar-state-v1";
 const ACTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
@@ -32,6 +35,53 @@ let acceptedAvatarState = null;
 const lastAvatarRevisions = new Map();
 let windowStateWriteTimer = null;
 let resizeState = null;
+
+function inputSettings() {
+  try {
+    const value = JSON.parse(fs.readFileSync(INPUT_SETTINGS_PATH, "utf8"));
+    return value && typeof value === "object" ? value : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function inputEnabled() {
+  return inputSettings().input_enabled === true;
+}
+
+function runVoiceInput(args) {
+  const python = process.platform === "win32"
+    ? path.join(VOICE_ROOT, ".venv", "Scripts", "python.exe")
+    : path.join(VOICE_ROOT, ".venv", "bin", "python");
+  const script = path.join(VOICE_ROOT, "voice_input.py");
+  if (!fs.existsSync(python) || !fs.existsSync(script)) {
+    return { ok: false, error: "voice_input_runtime_missing" };
+  }
+  const result = spawnSync(python, [script, "--voice-root", VOICE_ROOT, ...args], {
+    cwd: PROJECT_ROOT,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5000,
+  });
+  const lines = String(result.stdout || "").trim().split(/\r?\n/).filter(Boolean);
+  try {
+    return lines.length ? JSON.parse(lines[lines.length - 1]) : { ok: false, error: "voice_input_no_response" };
+  } catch (_) {
+    return { ok: false, error: String(result.stderr || "voice_input_failed").trim() };
+  }
+}
+
+function recordingPath(recordingId) {
+  if (typeof recordingId !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(recordingId)) {
+    throw new Error("invalid recording id");
+  }
+  fs.mkdirSync(INPUT_RECORDINGS_ROOT, { recursive: true });
+  const candidate = path.resolve(INPUT_RECORDINGS_ROOT, `${recordingId}.webm`);
+  if (!isWithin(path.resolve(INPUT_RECORDINGS_ROOT), candidate)) {
+    throw new Error("recording escaped the input boundary");
+  }
+  return candidate;
+}
 
 function log(message) {
   try {
@@ -427,6 +477,9 @@ function createWindow() {
   windowRef.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     log(`renderer console level=${level} ${sourceId}:${line} ${message}`);
   });
+  windowRef.webContents.on("context-menu", (event) => {
+    event.preventDefault();
+  });
   windowRef.webContents.on("render-process-gone", (_event, details) => {
     log(`renderer gone reason=${details.reason} exitCode=${details.exitCode}`);
   });
@@ -461,6 +514,55 @@ function createWindow() {
 
 ipcMain.on("close-orb", () => app.quit());
 ipcMain.on("set-move-mode", (_event, enabled) => setMoveMode(enabled));
+ipcMain.handle("voice-input-config", () => inputSettings());
+ipcMain.handle("voice-record-start", () => {
+  if (!inputEnabled()) {
+    return { ok: false, error: "voice_input_disabled" };
+  }
+  const result = runVoiceInput(["control", "capture-start"]);
+  if (windowRef && !windowRef.isDestroyed() && result.ok) {
+    windowRef.webContents.send("voice-input-state", {
+      state: "listening",
+      session_id: result.target_session_id,
+      capture_sequence: result.capture_sequence,
+    });
+  } else if (windowRef && !windowRef.isDestroyed() && !result.ok) {
+    windowRef.webContents.send("voice-input-state", { state: "error", error: result.error || "voice_input_failed" });
+  }
+  return result;
+});
+ipcMain.handle("voice-record-finish", (_event, payload) => {
+  if (!inputEnabled() || !payload || typeof payload !== "object") {
+    return { ok: false, error: "voice_input_disabled" };
+  }
+  try {
+    const bytes = payload.bytes;
+    if (!bytes || bytes.length > 10 * 1024 * 1024) {
+      return { ok: false, error: "recording_too_large" };
+    }
+    const captureSequence = Number(payload.capture_sequence);
+    if (!Number.isInteger(captureSequence) || captureSequence < 1) {
+      return { ok: false, error: "capture_sequence_missing" };
+    }
+    const destination = recordingPath(payload.recording_id);
+    fs.writeFileSync(destination, Buffer.from(bytes));
+    const result = runVoiceInput([
+      "control",
+      "capture-finish",
+      "--recording",
+      destination,
+      "--capture-sequence",
+      String(captureSequence),
+    ]);
+    if (!result.ok) {
+      fs.rmSync(destination, { force: true });
+    }
+    return result;
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+ipcMain.handle("voice-record-cancel", () => runVoiceInput(["control", "capture-cancel"]));
 ipcMain.on("orb-drag-start", (_event, payload) => {
   if (!moveMode || !windowRef || windowRef.isDestroyed()) {
     return;
@@ -544,6 +646,9 @@ ipcMain.on("orb-resize-end", () => {
 
 app.whenReady().then(() => {
   app.setAppUserModelId("Codex.StrandOrb");
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === "media" && inputEnabled());
+  });
   writePid();
   startAudioSocket();
   createWindow();

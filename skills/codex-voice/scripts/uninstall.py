@@ -177,6 +177,10 @@ def stop_runtime(voice_root: Path) -> None:
         voice_root / "orb" / "orb.pid",
         voice_root / "enabled",
         voice_root / "orb.enabled",
+        voice_root / "tts-player.pid",
+        voice_root / "tts-stop.request",
+        voice_root / "tts-resume.request",
+        voice_root / "input.pid",
     ):
         marker.unlink(missing_ok=True)
 
@@ -192,6 +196,11 @@ def remove_voice_root(voice_root: Path, *, keep_assets: bool) -> None:
             voice_root / "enabled",
             voice_root / "orb.enabled",
             voice_root / "progress",
+            voice_root / "input.json",
+            voice_root / "tts-player.pid",
+            voice_root / "tts-stop.request",
+            voice_root / "tts-resume.request",
+            voice_root / "input.pid",
         ):
             marker.unlink(missing_ok=True)
         print(f"Removed runtime markers; retained models and environments: {voice_root}")

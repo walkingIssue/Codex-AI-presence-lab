@@ -42,3 +42,28 @@ canvas {
   pointer-events: none;
   white-space: nowrap;
 }
+
+#voice-label {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 28px);
+  padding: 5px 10px;
+  border: 1px solid rgba(122, 230, 255, 0.28);
+  border-radius: 999px;
+  color: rgba(220, 250, 255, 0.88);
+  background: rgba(8, 20, 30, 0.68);
+  box-shadow: 0 0 18px rgba(74, 211, 255, 0.18);
+  font: 11px/1.2 "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+body[data-voice-input="listening"] #voice-label {
+  border-color: rgba(255, 190, 90, 0.72);
+  color: rgba(255, 232, 190, 0.96);
+}

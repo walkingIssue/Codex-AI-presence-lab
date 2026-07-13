@@ -2,6 +2,13 @@
 
 This is intentionally kept outside the distributable skill. The detailed backlog is in [WISHLIST.md](WISHLIST.md).
 
+The current implementation sequence for the local runtime, haunted voice-input
+slice, tray lifecycle, source registration, and optional ACP relays is recorded
+in [PRESENCE-RUNTIME-ROADMAP.md](PRESENCE-RUNTIME-ROADMAP.md).
+
+For a focused handoff on diagnosing voice capture, STT, interruption, and inbox
+replay, see [VOICE-INPUT-INVESTIGATION-BRIEF.md](VOICE-INPUT-INVESTIGATION-BRIEF.md).
+
 ## Current foundation
 
 - Project-local Kokoro worker with CPU, NVIDIA CUDA, and Intel Arc DirectML routes.

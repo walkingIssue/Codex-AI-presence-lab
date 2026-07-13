@@ -4,6 +4,26 @@ const RESIZE_HANDLE_PX = 48;
 let resizing = false;
 let resizePointerId = null;
 let requestedResizeMode = false;
+let voiceInputEnabled = false;
+let voiceMaxSeconds = 60;
+let gesture = null;
+let voiceRecorder = null;
+let voiceStream = null;
+let voiceRecordingId = null;
+let voiceChunks = [];
+let moveModeRequested = false;
+
+function requestMoveMode(enabled) {
+  const next = Boolean(enabled);
+  if (moveModeRequested === next) return;
+  moveModeRequested = next;
+  ipcRenderer.send("set-move-mode", next);
+}
+
+ipcRenderer.invoke("voice-input-config").then((settings) => {
+  voiceInputEnabled = settings?.input_enabled === true;
+  voiceMaxSeconds = Math.max(1, Math.min(60, Number(settings?.max_record_seconds) || 60));
+}).catch(() => {});
 
 function modifierHeld(event) {
   return Boolean(event.altKey && (event.ctrlKey || event.metaKey));
@@ -16,6 +36,139 @@ function inResizeHandle(event) {
 
 function resizePayload(event) {
   return { screenX: event.screenX, screenY: event.screenY };
+}
+
+function voiceModifierHeld(event) {
+  return Boolean(event.altKey && (event.ctrlKey || event.metaKey));
+}
+
+function gesturePayload(event) {
+  return { screenX: event.screenX, screenY: event.screenY };
+}
+
+function chooseRecordingMimeType() {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+  return candidates.find((value) => MediaRecorder.isTypeSupported(value)) || "";
+}
+
+function clearGestureTimer() {
+  if (gesture?.timer) {
+    clearTimeout(gesture.timer);
+    gesture.timer = null;
+  }
+}
+
+function releaseGenericMove() {
+  requestMoveMode(false);
+  if (gesture && gesture.pointerId != null && document.documentElement.hasPointerCapture?.(gesture.pointerId)) {
+    try { document.documentElement.releasePointerCapture(gesture.pointerId); } catch (_) {}
+  }
+}
+
+async function beginVoiceCapture(current) {
+  if (!voiceInputEnabled || gesture !== current || current.mode !== "pending") return;
+  current.mode = "record-requested";
+  const response = await ipcRenderer.invoke("voice-record-start");
+  if (!response?.ok) {
+    if (gesture === current) gesture = null;
+    releaseGenericMove();
+    return;
+  }
+  current.captureSequence = Number(response.capture_sequence) || null;
+  if (gesture !== current || current.releaseRequested) {
+    await ipcRenderer.invoke("voice-record-cancel");
+    if (gesture === current) gesture = null;
+    releaseGenericMove();
+    return;
+  }
+  try {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      throw new Error("microphone capture is unavailable in this Electron runtime");
+    }
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (gesture !== current || current.releaseRequested) {
+      voiceStream.getTracks().forEach((track) => track.stop());
+      voiceStream = null;
+      await ipcRenderer.invoke("voice-record-cancel");
+      if (gesture === current) gesture = null;
+      releaseGenericMove();
+      return;
+    }
+    voiceChunks = [];
+    voiceRecordingId = globalThis.crypto?.randomUUID?.() || `recording-${Date.now()}`;
+    const mimeType = chooseRecordingMimeType();
+    voiceRecorder = mimeType ? new MediaRecorder(voiceStream, { mimeType }) : new MediaRecorder(voiceStream);
+    voiceRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) voiceChunks.push(event.data);
+    };
+    voiceRecorder.onstop = async () => {
+      const recorder = voiceRecorder;
+      voiceRecorder = null;
+      voiceStream?.getTracks().forEach((track) => track.stop());
+      voiceStream = null;
+      const recordingId = voiceRecordingId;
+      voiceRecordingId = null;
+      const discard = Boolean(current.discard);
+      if (discard || !recordingId) {
+        voiceChunks = [];
+        await ipcRenderer.invoke("voice-record-cancel");
+      } else {
+        const blob = new Blob(voiceChunks, { type: recorder?.mimeType || "audio/webm" });
+        voiceChunks = [];
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        await ipcRenderer.invoke("voice-record-finish", {
+          recording_id: recordingId,
+          capture_sequence: current.captureSequence,
+          bytes,
+        });
+      }
+      if (gesture === current) gesture = null;
+      releaseGenericMove();
+    };
+    current.mode = "recording";
+    voiceRecorder.start(250);
+    current.timer = setTimeout(() => {
+      if (gesture === current && voiceRecorder && current.mode === "recording") {
+        current.discard = false;
+        voiceRecorder.stop();
+      }
+    }, voiceMaxSeconds * 1000);
+  } catch (_) {
+    voiceStream?.getTracks().forEach((track) => track.stop());
+    voiceStream = null;
+    voiceRecorder = null;
+    await ipcRenderer.invoke("voice-record-cancel");
+    if (gesture === current) gesture = null;
+    releaseGenericMove();
+  }
+}
+
+function stopVoiceCapture(discard) {
+  if (!gesture) return;
+  clearGestureTimer();
+  gesture.releaseRequested = true;
+  gesture.discard = Boolean(discard);
+  if (voiceRecorder && voiceRecorder.state !== "inactive") {
+    voiceRecorder.stop();
+    return;
+  }
+  if (gesture.mode === "record-requested") {
+    ipcRenderer.invoke("voice-record-cancel").catch(() => {});
+  }
+  gesture = null;
+  releaseGenericMove();
+}
+
+function cancelGenericGesture() {
+  if (!gesture) return;
+  clearGestureTimer();
+  if (gesture.mode === "drag") ipcRenderer.send("orb-drag-end");
+  if (gesture.mode === "recording" || gesture.mode === "record-requested") stopVoiceCapture(true);
+  else {
+    gesture = null;
+    releaseGenericMove();
+  }
 }
 
 function finishResize(event) {
@@ -40,12 +193,20 @@ window.addEventListener("mousemove", (event) => {
   const wantsResize = modifierHeld(event) && event.shiftKey && inResizeHandle(event);
   if (wantsResize && !requestedResizeMode && !resizing) {
     requestedResizeMode = true;
-    ipcRenderer.send("set-move-mode", true);
+    requestMoveMode(true);
   } else if (!wantsResize && requestedResizeMode && !resizing) {
     requestedResizeMode = false;
-    ipcRenderer.send("set-move-mode", false);
+    requestMoveMode(false);
   }
   document.documentElement.style.cursor = wantsResize ? "nwse-resize" : "";
+}, true);
+
+// Mouse movement is forwarded while the transparent window is click-through.
+// Arm the host before pointerdown so both drag and right-button capture can
+// arrive at the shared preload instead of being swallowed by the desktop.
+window.addEventListener("mousemove", (event) => {
+  if (resizing || gesture || event.shiftKey) return;
+  requestMoveMode(modifierHeld(event));
 }, true);
 
 window.addEventListener("pointerdown", (event) => {
@@ -80,6 +241,124 @@ window.addEventListener("pointerup", finishResize, true);
 window.addEventListener("pointercancel", finishResize, true);
 window.addEventListener("blur", () => finishResize(), true);
 
+// Voice capture is handled in the shared preload so custom Electron avatar
+// pages receive the same gesture as the built-in Orb. When input is enabled,
+// the left Ctrl/Cmd+Alt gesture remains movement-only; right-button hold is
+// reserved for recording.
+window.addEventListener("mousemove", (event) => {
+  if (voiceInputEnabled && gesture) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}, true);
+
+window.addEventListener("pointerdown", (event) => {
+  if (!voiceInputEnabled || event.button !== 0 || !voiceModifierHeld(event) || event.shiftKey || inResizeHandle(event)) {
+    return;
+  }
+  clearGestureTimer();
+  gesture = {
+    pointerId: event.pointerId,
+    button: 0,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    mode: "pending",
+    releaseRequested: false,
+    discard: false,
+    timer: null,
+  };
+  requestMoveMode(true);
+  if (event.target?.setPointerCapture) {
+    try { event.target.setPointerCapture(event.pointerId); } catch (_) {}
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
+// Right-button hold is the unambiguous voice-input gesture.  Unlike the
+// legacy left-button gesture it starts immediately and never becomes a drag,
+// so moving the pointer while speaking does not cancel or redirect capture.
+window.addEventListener("pointerdown", (event) => {
+  if (!voiceInputEnabled || gesture || event.button !== 2 || !voiceModifierHeld(event) || event.shiftKey) {
+    return;
+  }
+  clearGestureTimer();
+  gesture = {
+    pointerId: event.pointerId,
+    button: 2,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    mode: "pending",
+    releaseRequested: false,
+    discard: false,
+    timer: null,
+  };
+  requestMoveMode(true);
+  beginVoiceCapture(gesture);
+  if (event.target?.setPointerCapture) {
+    try { event.target.setPointerCapture(event.pointerId); } catch (_) {}
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
+window.addEventListener("pointermove", (event) => {
+  if (!voiceInputEnabled || !gesture || event.pointerId !== gesture.pointerId) return;
+  if (gesture.button === 2) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
+  if (gesture.mode === "pending") {
+    const dx = event.clientX - gesture.clientX;
+    const dy = event.clientY - gesture.clientY;
+    if ((dx * dx) + (dy * dy) > 64) {
+      clearGestureTimer();
+      gesture.mode = "drag";
+      ipcRenderer.send("orb-drag-start", gesturePayload(event));
+      ipcRenderer.send("orb-drag", gesturePayload(event));
+    }
+  } else if (gesture.mode === "drag") {
+    ipcRenderer.send("orb-drag", gesturePayload(event));
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
+window.addEventListener("pointerup", (event) => {
+  if (!voiceInputEnabled || !gesture || event.pointerId !== gesture.pointerId) return;
+  if (gesture.mode === "drag") {
+    ipcRenderer.send("orb-drag-end");
+    gesture = null;
+    releaseGenericMove();
+  } else if (gesture.mode === "recording" || gesture.mode === "record-requested") {
+    stopVoiceCapture(false);
+  } else {
+    clearGestureTimer();
+    gesture = null;
+    releaseGenericMove();
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
+window.addEventListener("pointercancel", () => cancelGenericGesture(), true);
+window.addEventListener("blur", () => cancelGenericGesture(), true);
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !gesture) return;
+  cancelGenericGesture();
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+window.addEventListener("keyup", (event) => {
+  if (!voiceInputEnabled || !gesture || gesture.button !== 2) return;
+  if ((event.key === "Control" || event.key === "Alt" || event.key === "Meta") && !voiceModifierHeld(event)) {
+    stopVoiceCapture(false);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}, true);
+
 contextBridge.exposeInMainWorld("orbApi", {
   onAudioEvent(callback) {
     const listener = (_event, payload) => callback(payload);
@@ -101,8 +380,25 @@ contextBridge.exposeInMainWorld("orbApi", {
     ipcRenderer.on("window-resize", listener);
     return () => ipcRenderer.removeListener("window-resize", listener);
   },
+  onVoiceInputState(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("voice-input-state", listener);
+    return () => ipcRenderer.removeListener("voice-input-state", listener);
+  },
+  voiceInputConfig() {
+    return ipcRenderer.invoke("voice-input-config");
+  },
+  voiceRecordStart() {
+    return ipcRenderer.invoke("voice-record-start");
+  },
+  voiceRecordFinish(payload) {
+    return ipcRenderer.invoke("voice-record-finish", payload);
+  },
+  voiceRecordCancel() {
+    return ipcRenderer.invoke("voice-record-cancel");
+  },
   setMoveMode(enabled) {
-    ipcRenderer.send("set-move-mode", Boolean(enabled));
+    requestMoveMode(enabled);
   },
   dragStart(payload) {
     ipcRenderer.send("orb-drag-start", payload);

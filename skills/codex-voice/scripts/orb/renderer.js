@@ -286,7 +286,8 @@ const ACTIVITY_ENERGY = {
   error: 0.90,
 };
 let moveMode = false;
-let dragging = false;
+let voiceInputState = "idle";
+const voiceLabel = document.getElementById("voice-label");
 let activityKind = 0;
 let targetActivityEnergy = 0;
 let activityEnergy = 0;
@@ -297,90 +298,61 @@ let lastFrameMilliseconds = 0;
 const targetActivityColor = new Float32Array(ACTIVITY_COLORS.idle);
 const activityColor = new Float32Array(ACTIVITY_COLORS.idle);
 
-function moveModifierHeld(event) {
-  return Boolean(event.altKey && (event.ctrlKey || event.metaKey));
-}
-
 function setMoveMode(enabled) {
   moveMode = Boolean(enabled);
-  if (!moveMode) {
-    dragging = false;
-    document.body.classList.remove("dragging");
-  }
   document.body.classList.toggle("move-mode", moveMode);
   moveHint.hidden = !moveMode;
 }
 
 window.orbApi.onMoveMode(setMoveMode);
 
-function beginDrag(event) {
-  if (dragging) {
-    return;
+function setVoiceInputState(payload) {
+  const state = typeof payload?.state === "string" ? payload.state : "idle";
+  const captureSequence = Number.isInteger(Number(payload?.capture_sequence))
+    ? Number(payload.capture_sequence)
+    : null;
+  const sequenceLabel = captureSequence && captureSequence > 0 ? ` #${captureSequence}` : "";
+  voiceInputState = state;
+  document.body.dataset.voiceInput = state;
+  document.body.classList.toggle("voice-listening", state === "listening");
+  if (!voiceLabel) return;
+  if (state === "listening") {
+    voiceLabel.textContent = `Listening${sequenceLabel}…`;
+    voiceLabel.hidden = false;
+  } else if (state === "transcribing") {
+    voiceLabel.textContent = `Transcribing${sequenceLabel}…`;
+    voiceLabel.hidden = false;
+  } else if (state === "submitting") {
+    voiceLabel.textContent = "Sending to session…";
+    voiceLabel.hidden = false;
+  } else if (state === "target-response") {
+    voiceLabel.textContent = "Session response in progress";
+    voiceLabel.hidden = false;
+  } else if (state === "clipboard-ready") {
+    voiceLabel.textContent = `Copied${sequenceLabel} — paste into Codex`;
+    voiceLabel.hidden = false;
+    window.setTimeout(() => {
+      if (voiceInputState === "clipboard-ready") voiceLabel.hidden = true;
+    }, 5000);
+  } else if (state === "error") {
+    voiceLabel.textContent = "Voice input unavailable";
+    voiceLabel.hidden = false;
+    window.setTimeout(() => {
+      if (voiceInputState === "error") voiceLabel.hidden = true;
+    }, 2400);
+  } else if (state === "idle") {
+    voiceLabel.hidden = true;
   }
-  dragging = true;
-  document.body.classList.add("dragging");
-  if (event.pointerId !== undefined) {
-    canvas.setPointerCapture(event.pointerId);
-  }
-  window.orbApi.dragStart({ screenX: event.screenX, screenY: event.screenY });
-  event.preventDefault();
 }
 
-// Electron forwards mouse movement while the transparent window is
-// click-through. Use that safe signal to arm the window before the deliberate
-// Ctrl/Cmd+Alt+left-button gesture arrives. Forwarded mousemove events do not
-// reliably preserve `buttons`, so the left-button check belongs on pointerdown.
-window.addEventListener("mousemove", (event) => {
-  const wantsMove = moveModifierHeld(event);
-  if (!moveMode && !dragging && wantsMove) {
-    setMoveMode(true);
-    window.orbApi.setMoveMode(true);
-  } else if (moveMode && dragging) {
-    window.orbApi.drag({ screenX: event.screenX, screenY: event.screenY });
-  } else if (moveMode && !dragging && !wantsMove) {
-    setMoveMode(false);
-    window.orbApi.setMoveMode(false);
-  }
-});
-
-canvas.addEventListener("pointerdown", (event) => {
-  if (!moveMode || event.button !== 0 || !moveModifierHeld(event)) {
-    return;
-  }
-  beginDrag(event);
-});
-
-canvas.addEventListener("pointermove", (event) => {
-  if (!moveMode || !dragging) {
-    return;
-  }
-  window.orbApi.drag({ screenX: event.screenX, screenY: event.screenY });
-  event.preventDefault();
-});
-
-function finishDrag(event) {
-  if (!dragging) {
-    return;
-  }
-  dragging = false;
-  document.body.classList.remove("dragging");
-  if (event && canvas.hasPointerCapture(event.pointerId)) {
-    canvas.releasePointerCapture(event.pointerId);
-  }
-  window.orbApi.dragEnd();
-  setMoveMode(false);
-  window.orbApi.setMoveMode(false);
+function setVoiceOutputLabel(payload) {
+  const label = typeof payload?.session_label === "string" ? payload.session_label.trim() : "";
+  if (!label || !voiceLabel) return;
+  voiceLabel.textContent = `${label} says`;
+  voiceLabel.hidden = false;
 }
 
-canvas.addEventListener("pointerup", finishDrag);
-canvas.addEventListener("pointercancel", finishDrag);
-window.addEventListener("keydown", (event) => {
-  if (moveMode && event.key === "Escape") {
-    setMoveMode(false);
-    window.orbApi.setMoveMode(false);
-  }
-});
-
+window.orbApi.onVoiceInputState(setVoiceInputState);
 function setActivityState(state, ttlMs = 0) {
   const normalized = ACTIVITY_STATES.includes(state) ? state : "idle";
   const previous = ACTIVITY_STATES[activityKind];
@@ -399,12 +371,23 @@ function setActivityState(state, ttlMs = 0) {
 }
 
 window.orbApi.onAudioEvent((event) => {
+  if (event.type === "voice-input") {
+    setVoiceInputState(event);
+    return;
+  }
+  if (event.type === "voice-output") {
+    setVoiceOutputLabel(event);
+    return;
+  }
   if (event.type === "activity") {
     setActivityState(event.state, Number(event.ttl_ms) || 0);
     return;
   }
   if (event.type === "state") {
     targetSpeaking = event.state === "speaking" ? 1 : 0;
+    if (event.state !== "speaking" && voiceInputState === "idle" && voiceLabel) {
+      voiceLabel.hidden = true;
+    }
     if (targetSpeaking) {
       targetAmplitude = Math.max(targetAmplitude, 0.18);
     } else {

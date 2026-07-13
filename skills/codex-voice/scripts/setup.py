@@ -26,9 +26,12 @@ VOICES_NAME = "voices-v1.0.bin"
 VOICE_GITIGNORE = """.venv/
 .cuda-venv/
 .dml-venv/
+.stt-venv/
 *.wav
 *.log
 *.pid
+tts-progress.json
+tts-progress.tmp
 orb/node_modules/
 orb-position.json
 orb.enabled
@@ -41,6 +44,10 @@ sessions.json
 avatar-selection.json
 avatar-state.json
 avatar-state-status.json
+input.json
+inbox.sqlite3*
+inbox/
+stt-models/
 """
 ORB_FILES = (
     "index.html",
@@ -296,6 +303,19 @@ def install_avatar_state_script(voice_root: Path) -> None:
     shutil.copy2(SCRIPT_ROOT / "avatar_state.py", voice_root / "avatar_state.py")
 
 
+def install_voice_input_scripts(voice_root: Path) -> None:
+    """Expose the local inbox, input control, STT, and delivery adapters."""
+    for name in ("inbox.py", "voice_input.py", "stt.py", "delivery.py", "clipboard.py", "presence_service.py"):
+        shutil.copy2(SCRIPT_ROOT / name, voice_root / name)
+
+
+def setup_input(voice_root: Path, base_python: list[str]) -> None:
+    environment = voice_root / ".stt-venv"
+    python = ensure_environment(environment, base_python)
+    install_requirements(python, SKILL_ROOT / "requirements-input.txt")
+    print(f"Local STT runtime is configured in {environment}")
+
+
 def install_runtime_manifest(voice_root: Path) -> None:
     """Copy the tracked ownership inventory into the project runtime."""
     shutil.copy2(SKILL_ROOT / RUNTIME_MANIFEST_NAME, voice_root / RUNTIME_MANIFEST_NAME)
@@ -367,6 +387,11 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="back up and replace a different existing speak.py")
     parser.add_argument("--no-orb", action="store_true", help="skip copying/installing the Strand Orb")
     parser.add_argument(
+        "--with-input",
+        action="store_true",
+        help="install the optional local speech-to-text runtime in .stt-venv",
+    )
+    parser.add_argument(
         "--python",
         type=Path,
         help="base Python 3.11 or 3.12 executable for isolated environments",
@@ -401,12 +426,34 @@ def main() -> int:
         setup_directml(voice_root, model, base_python)
         provider = "directml"
 
+    if args.with_input:
+        setup_input(voice_root, base_python)
+
     (voice_root / "gpu_patch").mkdir(exist_ok=True)
     write_default(voice_root / "voice", "bf_isabella\n")
     write_default(voice_root / "mode", "stream\n")
     write_default(voice_root / "speed", "1.08\n")
     write_default(voice_root / "volume", "20\n")
     write_default(voice_root / "commentary-volume", "50\n")
+    input_settings = voice_root / "input.json"
+    if not input_settings.exists():
+        input_settings.write_text(
+            json.dumps(
+                {
+                    "input_enabled": False,
+                    "input_gesture": "hold-ctrl-alt-right",
+                    "delivery_mode": "clipboard",
+                    "session_lock": "through-response",
+                    "session_labels": "session-change",
+                    "session_label_template": "{session_name} says",
+                    "max_record_seconds": 60,
+                    "lock_timeout_seconds": 120,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     (voice_root / "provider").write_text(provider + "\n", encoding="utf-8")
     if args.enable:
         (voice_root / "enabled").write_text("on\n", encoding="utf-8")
@@ -416,6 +463,7 @@ def main() -> int:
     install_activity_script(voice_root)
     install_avatar_script(voice_root)
     install_avatar_state_script(voice_root)
+    install_voice_input_scripts(voice_root)
     install_runtime_manifest(voice_root)
 
     print(f"Codex AI Presence setup complete in {project_root}")

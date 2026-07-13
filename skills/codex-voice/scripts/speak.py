@@ -25,6 +25,10 @@ VOICES_PATH = VOICE_ROOT / "voices-v1.0.bin"
 ENABLED_MARKER = VOICE_ROOT / "enabled"
 LOG_PATH = VOICE_ROOT / "hook.log"
 WATCHER_PID_PATH = VOICE_ROOT / "watcher.pid"
+PLAYER_PID_PATH = VOICE_ROOT / "tts-player.pid"
+STOP_REQUEST_PATH = VOICE_ROOT / "tts-stop.request"
+RESUME_REQUEST_PATH = VOICE_ROOT / "tts-resume.request"
+PROGRESS_PATH = VOICE_ROOT / "tts-progress.json"
 VOICE_CONFIG_PATH = VOICE_ROOT / "voice"
 MODE_CONFIG_PATH = VOICE_ROOT / "mode"
 SPEED_CONFIG_PATH = VOICE_ROOT / "speed"
@@ -37,7 +41,152 @@ DEFAULT_MODE = "stream"
 DEFAULT_SPEED = 1.08
 DEFAULT_PROVIDER = "cpu"
 DEFAULT_VOLUME = 20
+PLAYER_DRAIN_TIMEOUT_SECONDS = 10.0
+MAX_PACING_CATCHUP_SECONDS = 0.1
 _TTS_CACHE = None
+_FFPLAY_CACHE: str | None = None
+_FFPLAY_RESOLVED = False
+
+
+class PlaybackInterrupted(RuntimeError):
+    """The host requested that the current speech item stop immediately."""
+
+
+async def wait_until_playback_deadline(
+    deadline: float,
+    *,
+    clock=None,
+    sleeper=None,
+) -> None:
+    """Do not advance PCM pacing when a platform timer wakes up early."""
+    import asyncio
+
+    if clock is None:
+        clock = asyncio.get_running_loop().time
+    if sleeper is None:
+        sleeper = asyncio.sleep
+    while True:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return
+        await sleeper(remaining)
+
+
+def advance_playback_deadline(
+    previous: float | None,
+    frame_seconds: float,
+    now: float,
+) -> float:
+    """Pace against one clock while bounding catch-up after a scheduler stall."""
+    if previous is None:
+        anchor = now
+    else:
+        anchor = max(previous, now - MAX_PACING_CATCHUP_SECONDS)
+    return anchor + max(0.0, frame_seconds)
+
+
+def ffplay_executable() -> str | None:
+    """Resolve the real player binary instead of a process-spawning shim."""
+    global _FFPLAY_CACHE, _FFPLAY_RESOLVED
+    if _FFPLAY_RESOLVED:
+        return _FFPLAY_CACHE
+    _FFPLAY_RESOLVED = True
+    candidate_value = shutil.which("ffplay")
+    if not candidate_value:
+        return None
+    candidate = Path(candidate_value)
+    if os.name == "nt":
+        chocolatey_root = Path(
+            os.environ.get("ChocolateyInstall", r"C:\ProgramData\chocolatey")
+        )
+        try:
+            is_chocolatey_shim = (
+                candidate.resolve().parent
+                == (chocolatey_root / "bin").resolve()
+            )
+        except OSError:
+            is_chocolatey_shim = False
+        if is_chocolatey_shim:
+            try:
+                real_players = [
+                    path
+                    for path in (chocolatey_root / "lib").rglob("ffplay.exe")
+                    if path.is_file() and path.stat().st_size > 1_000_000
+                ]
+            except OSError:
+                real_players = []
+            if real_players:
+                candidate = max(real_players, key=lambda path: path.stat().st_size)
+    _FFPLAY_CACHE = str(candidate)
+    return _FFPLAY_CACHE
+
+
+def stop_requested() -> bool:
+    if not STOP_REQUEST_PATH.is_file():
+        return False
+    try:
+        STOP_REQUEST_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
+def resume_requested() -> bool:
+    if not RESUME_REQUEST_PATH.is_file():
+        return False
+    try:
+        RESUME_REQUEST_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
+def write_player_pid(player: subprocess.Popen[bytes] | None) -> None:
+    if player is None:
+        return
+    try:
+        PLAYER_PID_PATH.write_text(str(player.pid), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def clear_player_pid(player: subprocess.Popen[bytes] | None) -> None:
+    if player is None:
+        return
+    try:
+        if PLAYER_PID_PATH.read_text(encoding="utf-8").strip() == str(player.pid):
+            PLAYER_PID_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def write_tts_progress(event_id: str | None, text: str, fraction: float) -> None:
+    if not event_id:
+        return
+    fraction = max(0.0, min(0.99, float(fraction)))
+    payload = {
+        "event_id": event_id,
+        "offset": min(len(text), max(0, int(round(len(text) * fraction)))),
+        "fraction": fraction,
+        "updated_at": time.time(),
+    }
+    temporary = PROGRESS_PATH.with_suffix(".tmp")
+    try:
+        temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(PROGRESS_PATH)
+    except OSError:
+        pass
+
+
+def clear_tts_progress(event_id: str | None) -> None:
+    if not event_id:
+        return
+    try:
+        payload = json.loads(PROGRESS_PATH.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and str(payload.get("event_id")) == event_id:
+            PROGRESS_PATH.unlink(missing_ok=True)
+    except (OSError, json.JSONDecodeError):
+        pass
 
 
 def debug(message: str) -> None:
@@ -400,9 +549,16 @@ def generate_audio(text: str) -> Path:
     return audio_path
 
 
-def stream_audio(text: str) -> None:
-    """Stream Kokoro chunks directly to ffplay instead of waiting for a WAV."""
+def stream_audio(
+    text: str,
+    *,
+    event_id: str | None = None,
+    interruptible: bool = True,
+    pauseable: bool = False,
+) -> None:
+    """Generate PCM independently and feed a pauseable, frame-paced OS sink."""
     import asyncio
+    from contextlib import suppress
 
     import numpy as np
     if not configured_model_path().is_file() or not VOICES_PATH.is_file():
@@ -410,7 +566,7 @@ def stream_audio(text: str) -> None:
             f"Kokoro assets are missing under {VOICE_ROOT}. Run the setup command again."
         )
 
-    ffplay = shutil.which("ffplay")
+    ffplay = ffplay_executable()
     if not ffplay:
         raise RuntimeError("ffplay is required for streaming playback")
 
@@ -421,77 +577,240 @@ def stream_audio(text: str) -> None:
     orb = orb_socket()
 
     async def consume() -> None:
+        audio_queue: asyncio.Queue[tuple[object, int] | None] = asyncio.Queue()
+        playback_allowed = asyncio.Event()
+        playback_allowed.set()
+        abort_requested = asyncio.Event()
+        shutdown = asyncio.Event()
         player: subprocess.Popen[bytes] | None = None
         timeline: OrbPlaybackTimeline | None = None
-        first_chunk = True
-        try:
-            async for audio, sample_rate in tts.create_stream(
-                text,
-                voice,
-                speed=speed,
-                lang=language_for_voice(voice),
-            ):
-                if player is None:
-                    player = subprocess.Popen(
-                        [
-                            ffplay,
-                            "-nodisp",
-                            "-autoexit",
-                            "-loglevel",
-                            "error",
-                            "-f",
-                            "f32le",
-                            "-ar",
-                            str(sample_rate),
-                            "-ch_layout",
-                            "mono",
-                            "-volume",
-                            str(volume),
-                            "-i",
-                            "-",
-                        ],
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        first_frame = True
+        completed = False
+        total_samples = 0
+        control_generation = 0
+        producer_error: BaseException | None = None
+        estimated_seconds = max(0.5, len(text) / (13.0 * max(speed, 0.5)))
+
+        def close_player(*, graceful: bool = False) -> None:
+            nonlocal player
+            current = player
+            player = None
+            if current is None:
+                return
+            try:
+                if current.stdin is not None:
+                    current.stdin.close()
+            except OSError:
+                pass
+            try:
+                if graceful:
+                    drain_started = time.monotonic()
+                    current.wait(timeout=PLAYER_DRAIN_TIMEOUT_SECONDS)
+                    hook_log(
+                        "stream sink drained after EOF in "
+                        f"{time.monotonic() - drain_started:.3f}s"
                     )
-                    if player.stdin is None:
-                        raise RuntimeError("Could not open ffplay input")
-                    timeline = OrbPlaybackTimeline(orb, int(sample_rate))
-                    hook_log("stream first chunk")
-                samples = np.asarray(audio, dtype=np.float32).reshape(-1)
-                raw_audio = samples.tobytes()
-                if timeline is not None:
-                    timeline.add(samples)
+                elif current.poll() is None:
+                    current.terminate()
+                    current.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                if graceful:
+                    hook_log(
+                        "stream sink drain timed out after "
+                        f"{PLAYER_DRAIN_TIMEOUT_SECONDS:.1f}s; forcing close"
+                    )
                 try:
-                    player.stdin.write(raw_audio)
-                    player.stdin.flush()
-                except BrokenPipeError:
-                    raise RuntimeError("ffplay closed the streaming input")
-                first_chunk = False
+                    current.kill()
+                    current.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            except OSError:
+                try:
+                    current.kill()
+                except OSError:
+                    pass
+            clear_player_pid(current)
+
+        def ensure_player(sample_rate: int) -> subprocess.Popen[bytes]:
+            nonlocal player
+            if player is not None and player.poll() is None:
+                return player
+            close_player()
+            player = subprocess.Popen(
+                [
+                    ffplay,
+                    "-nodisp",
+                    "-autoexit",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "f32le",
+                    "-ar",
+                    str(sample_rate),
+                    "-ch_layout",
+                    "mono",
+                    "-volume",
+                    str(volume),
+                    "-i",
+                    "-",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if player.stdin is None:
+                raise RuntimeError("Could not open ffplay input")
+            write_player_pid(player)
+            return player
+
+        async def produce() -> None:
+            nonlocal producer_error
+            try:
+                async for audio, sample_rate in tts.create_stream(
+                    text,
+                    voice,
+                    speed=speed,
+                    lang=language_for_voice(voice),
+                ):
+                    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+                    frame_samples = max(1, int(sample_rate * 0.02))
+                    for offset in range(0, len(samples), frame_samples):
+                        await audio_queue.put(
+                            (samples[offset : offset + frame_samples].copy(), int(sample_rate))
+                        )
+            except BaseException as exc:
+                producer_error = exc
+            finally:
+                await audio_queue.put(None)
+
+        async def monitor_controls() -> None:
+            nonlocal control_generation
+            while not shutdown.is_set():
+                if stop_requested():
+                    control_generation += 1
+                    close_player()
+                    if pauseable:
+                        playback_allowed.clear()
+                        hook_log("stream playback paused; inference continues")
+                    elif interruptible:
+                        abort_requested.set()
+                        playback_allowed.set()
+                if resume_requested() and pauseable:
+                    playback_allowed.set()
+                    hook_log("stream playback resumed from buffered PCM")
+                await asyncio.sleep(0.01)
+
+        async def play_frames() -> None:
+            nonlocal timeline, first_frame, total_samples
+            loop = asyncio.get_running_loop()
+            paced_player: subprocess.Popen[bytes] | None = None
+            playback_deadline: float | None = None
+            while True:
+                item = await audio_queue.get()
+                if item is None:
+                    return
+                frame, sample_rate = item
+                failures = 0
+                while True:
+                    if abort_requested.is_set():
+                        raise PlaybackInterrupted()
+                    await playback_allowed.wait()
+                    if abort_requested.is_set():
+                        raise PlaybackInterrupted()
+                    # The input helper writes the marker before terminating
+                    # ffplay. Give the monitor a turn before a replacement sink
+                    # can be created.
+                    if STOP_REQUEST_PATH.is_file():
+                        await asyncio.sleep(0.01)
+                        continue
+                    generation = control_generation
+                    current = ensure_player(sample_rate)
+                    if paced_player is not current:
+                        paced_player = current
+                        playback_deadline = None
+                    if timeline is None:
+                        timeline = OrbPlaybackTimeline(orb, sample_rate)
+                    try:
+                        assert current.stdin is not None
+                        current.stdin.write(frame.tobytes())
+                        current.stdin.flush()
+                    except (BrokenPipeError, OSError):
+                        close_player()
+                        failures += 1
+                        if failures >= 3 and playback_allowed.is_set():
+                            raise RuntimeError("ffplay repeatedly closed the streaming input")
+                        await asyncio.sleep(0.01)
+                        continue
+                    if first_frame:
+                        hook_log("stream first frame")
+                        first_frame = False
+                    playback_deadline = advance_playback_deadline(
+                        playback_deadline,
+                        len(frame) / max(1, sample_rate),
+                        loop.time(),
+                    )
+                    await wait_until_playback_deadline(
+                        playback_deadline
+                    )
+                    if generation != control_generation or not playback_allowed.is_set():
+                        # At most one 20 ms frame is replayed after an immediate
+                        # sink termination; no later audio reaches the OS while
+                        # capture is held.
+                        continue
+                    timeline.add(frame)
+                    total_samples += len(frame)
+                    elapsed_seconds = total_samples / max(1, sample_rate)
+                    write_tts_progress(event_id, text, elapsed_seconds / estimated_seconds)
+                    break
+
+        producer_task = asyncio.create_task(produce())
+        monitor_task = asyncio.create_task(monitor_controls())
+        try:
+            await play_frames()
+            await producer_task
+            if producer_error is not None:
+                raise producer_error
+            completed = True
         finally:
-            if player is not None:
-                if player.stdin is not None:
-                    player.stdin.close()
-                player.wait()
-                if first_chunk:
-                    hook_log("stream ended without audio chunks")
+            shutdown.set()
+            monitor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await monitor_task
+            if not producer_task.done():
+                producer_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await producer_task
+            close_player(graceful=completed)
+            if first_frame:
+                hook_log("stream ended without audio frames")
             if timeline is not None:
                 timeline.finish()
             elif orb is not None:
                 orb.close()
+            if completed:
+                clear_tts_progress(event_id)
+            STOP_REQUEST_PATH.unlink(missing_ok=True)
+            RESUME_REQUEST_PATH.unlink(missing_ok=True)
 
     asyncio.run(consume())
     hook_log("stream completed")
 
 
-def play_audio(audio_path: Path) -> None:
-    ffplay = shutil.which("ffplay")
+def play_audio(
+    audio_path: Path,
+    *,
+    event_id: str | None = None,
+    text: str | None = None,
+    interruptible: bool = True,
+) -> None:
+    ffplay = ffplay_executable()
     if ffplay:
         volume = configured_volume()
         if orb_is_enabled():
             player: subprocess.Popen[bytes] | None = None
             timeline: OrbPlaybackTimeline | None = None
+            completed = False
             try:
                 import soundfile as sf
 
@@ -514,20 +833,36 @@ def play_audio(audio_path: Path) -> None:
                     stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
+                write_player_pid(player)
                 timeline.add(audio)
-                player.wait()
+                duration = max(0.1, len(audio) / max(1, int(sample_rate)))
+                started_at = time.monotonic()
+                progress_text = text or audio_path.name
+                write_tts_progress(event_id, progress_text, 0.0)
+                while player.poll() is None:
+                    if interruptible and stop_requested():
+                        player.terminate()
+                        raise PlaybackInterrupted()
+                    write_tts_progress(event_id, progress_text, (time.monotonic() - started_at) / duration)
+                    time.sleep(0.05)
+                completed = True
                 return
+            except PlaybackInterrupted:
+                raise
             except Exception as exc:
                 hook_log(f"buffered orb playback failed: {type(exc).__name__}: {exc}")
                 if player is not None:
                     if player.poll() is None:
                         player.wait()
+                    clear_player_pid(player)
                     return
             finally:
                 if timeline is not None:
                     timeline.finish()
+                if completed:
+                    clear_tts_progress(event_id)
 
-        subprocess.run(
+        player = subprocess.Popen(
             [
                 ffplay,
                 "-nodisp",
@@ -538,10 +873,22 @@ def play_audio(audio_path: Path) -> None:
                 str(volume),
                 str(audio_path),
             ],
-            check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        write_player_pid(player)
+        completed = False
+        try:
+            while player.poll() is None:
+                if interruptible and stop_requested():
+                    player.terminate()
+                    raise PlaybackInterrupted()
+                time.sleep(0.05)
+            completed = True
+        finally:
+            clear_player_pid(player)
+            if completed:
+                clear_tts_progress(event_id)
         return
 
     if os.environ.get("CODEX_TTS_ALLOW_FULL_VOLUME") != "1":
@@ -598,6 +945,10 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
         return done()
 
     audio_path: Path | None = None
+    event_id = payload.get("tts_event_id")
+    event_id = event_id.strip() if isinstance(event_id, str) and event_id.strip() else None
+    pauseable = bool(payload.get("tts_pauseable"))
+    interruptible = not pauseable
     try:
         hook_log(
             f"speaking: {len(text)} characters mode={configured_mode()} "
@@ -605,12 +956,25 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
             f"provider={configured_provider()}"
         )
         debug(f"generating {len(text)} characters")
-        if configured_mode() == "stream" and shutil.which("ffplay"):
-            stream_audio(text)
+        if configured_mode() == "stream" and ffplay_executable():
+            stream_audio(
+                text,
+                event_id=event_id,
+                interruptible=interruptible,
+                pauseable=pauseable,
+            )
         else:
             audio_path = generate_audio(text)
-            play_audio(audio_path)
+            play_audio(
+                audio_path,
+                event_id=event_id,
+                text=text,
+                interruptible=interruptible,
+            )
         hook_log("completed")
+    except PlaybackInterrupted:
+        hook_log("interrupted by voice input")
+        return finish(emit=emit_finish) if emit_finish else 3
     except Exception as exc:  # Never make a Codex turn fail because TTS failed.
         hook_log(f"error: {type(exc).__name__}: {exc}")
         print(f"Codex TTS skipped: {exc}", file=sys.stderr)
@@ -642,7 +1006,16 @@ def server_main() -> int:
             if not isinstance(payload, dict):
                 raise ValueError("request must be a JSON object")
             result = handle_payload(payload, emit_finish=False)
-            print(json.dumps({"done": True, "ok": result == 0}), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "done": True,
+                        "ok": result == 0,
+                        "interrupted": result == 3,
+                    }
+                ),
+                flush=True,
+            )
         except Exception as exc:
             hook_log(f"persistent TTS worker request failed: {type(exc).__name__}: {exc}")
             print(json.dumps({"done": True, "ok": False}), flush=True)

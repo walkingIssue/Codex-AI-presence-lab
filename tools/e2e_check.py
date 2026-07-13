@@ -25,6 +25,8 @@ REQUIRED_FILES = (
     "scripts/toggle.py",
     "scripts/uninstall.py",
     "scripts/watcher.py",
+    "scripts/presence_service.py",
+    "scripts/clipboard.py",
 )
 
 
@@ -82,7 +84,12 @@ def main() -> int:
     from uninstall import read_runtime_manifest
 
     manifest_text = (skill / "RUNTIME-MANIFEST.md").read_text(encoding="utf-8")
-    for required_entry in (".codex-voice/activity.py", ".codex-voice/orb/", ".codex/hooks/speak.py"):
+    for required_entry in (
+        ".codex-voice/activity.py",
+        ".codex-voice/presence_service.py",
+        ".codex-voice/orb/",
+        ".codex/hooks/speak.py",
+    ):
         if required_entry not in manifest_text:
             raise SystemExit(f"Runtime manifest omitted required artifact: {required_entry}")
 
