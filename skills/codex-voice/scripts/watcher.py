@@ -704,10 +704,7 @@ class PlaybackArbiter:
 
     @staticmethod
     def _is_ephemeral_update(message: dict[str, object]) -> bool:
-        return bool(message.get("_ephemeral_update")) or message.get("kind") in {
-            "commentary",
-            "update",
-        }
+        return bool(message.get("_ephemeral_update"))
 
     @staticmethod
     def _attention_key(message: dict[str, object]) -> str:
@@ -1396,6 +1393,12 @@ def main() -> int:
     recovered = inbox.recover_inflight()
     if recovered:
         log(voice_root, f"recovered {recovered} interrupted inbox item(s) after restart")
+    discarded_legacy_updates = inbox.discard_legacy_updates()
+    if discarded_legacy_updates:
+        log(
+            voice_root,
+            f"discarded {discarded_legacy_updates} legacy commentary inbox item(s) after update-lane migration",
+        )
     recovered_input = inbox.recover_input_state()
     if recovered_input is not None:
         removed_recordings = discard_orphan_recordings(voice_root)

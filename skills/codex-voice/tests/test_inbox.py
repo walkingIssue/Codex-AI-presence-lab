@@ -113,6 +113,22 @@ class InboxTests(unittest.TestCase):
             self.assertEqual(recovered["event_id"], "playing-1")
             self.assertEqual(recovered["replay_count"], 1)
 
+    def test_discard_legacy_commentary_clears_stale_playback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = Inbox(Path(directory) / "inbox.sqlite3")
+            legacy = message("legacy-update")
+            legacy["kind"] = "commentary"
+            inbox.enqueue(legacy)
+            inbox.claim_next("session-a")
+            self.assertEqual(inbox.discard_legacy_updates(), 1)
+            with inbox.connection() as connection:
+                row = connection.execute(
+                    "SELECT status, last_error FROM messages WHERE event_id = ?",
+                    ("legacy-update",),
+                ).fetchone()
+            self.assertEqual(row["status"], "played")
+            self.assertEqual(row["last_error"], "discarded_legacy_ephemeral_update")
+
     def test_recover_input_state_releases_stale_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             inbox = Inbox(Path(directory) / "inbox.sqlite3")

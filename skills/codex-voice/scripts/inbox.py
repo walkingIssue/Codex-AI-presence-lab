@@ -164,6 +164,28 @@ class Inbox:
             )
             return cursor.rowcount
 
+    def discard_legacy_updates(self) -> int:
+        """Retire commentary rows created before the ephemeral update lane.
+
+        Older watcher revisions stored progress commentary as durable inbox
+        messages.  They are no longer replayable output, so a restart must
+        clear them instead of speaking an old backlog or leaving a stale
+        ``playing`` row behind.
+        """
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE messages
+                SET status = 'played',
+                    last_error = 'discarded_legacy_ephemeral_update',
+                    resume_text = NULL,
+                    resume_offset = NULL
+                WHERE kind IN ('commentary', 'update')
+                  AND status IN ('queued', 'retry', 'playing')
+                """
+            )
+            return cursor.rowcount
+
     def recover_input_state(self) -> dict[str, object] | None:
         """Release a capture lock that cannot survive a watcher restart."""
         focus = self.get_state("focus", {})
