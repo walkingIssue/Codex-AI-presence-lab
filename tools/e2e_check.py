@@ -81,7 +81,7 @@ def main() -> int:
 
     sys.path.insert(0, str(skill / "scripts"))
     from activity import classify_activity
-    from setup import install_activity_script, install_profile_script, install_runtime_manifest
+    from setup import ensure_gitignore, install_activity_script, install_profile_script, install_runtime_manifest
     from uninstall import read_runtime_manifest
 
     manifest_text = (skill / "RUNTIME-MANIFEST.md").read_text(encoding="utf-8")
@@ -118,6 +118,14 @@ def main() -> int:
         voice_root = project / ".codex-voice"
         scripts.mkdir(parents=True)
         voice_root.mkdir()
+        (voice_root / ".gitignore").write_text(".venv/\nsessions.json\n", encoding="utf-8")
+        ensure_gitignore(voice_root / ".gitignore")
+        ignore_lines = (voice_root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for required_pattern in (".stt-venv/", "input.json", "presence-profiles.json"):
+            if required_pattern not in ignore_lines:
+                raise SystemExit(f"Setup upgrade omitted runtime ignore pattern: {required_pattern}")
+        if ignore_lines.count(".venv/") != 1 or ignore_lines.count("sessions.json") != 1:
+            raise SystemExit("Setup upgrade duplicated existing runtime ignore patterns")
         install_activity_script(voice_root)
         install_profile_script(voice_root)
         install_runtime_manifest(voice_root)

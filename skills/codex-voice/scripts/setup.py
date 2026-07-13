@@ -173,6 +173,25 @@ def write_default(path: Path, value: str) -> None:
         path.write_text(value, encoding="utf-8")
 
 
+def ensure_gitignore(path: Path) -> None:
+    """Add newly managed runtime patterns without replacing local entries."""
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except OSError:
+        existing = ""
+    existing_lines = set(existing.splitlines())
+    missing = [line for line in VOICE_GITIGNORE.splitlines() if line and line not in existing_lines]
+    if not missing:
+        return
+    updated = existing.rstrip("\r\n")
+    if updated:
+        updated += "\n"
+    updated += "\n".join(missing) + "\n"
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(updated, encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def electron_binary(orb_root: Path) -> Path:
     if os.name == "nt":
         return orb_root / "node_modules" / "electron" / "dist" / "electron.exe"
@@ -414,7 +433,7 @@ def main() -> int:
     base_python = select_base_python(args.python)
     voice_root = project_root / ".codex-voice"
     voice_root.mkdir(parents=True, exist_ok=True)
-    write_default(voice_root / ".gitignore", VOICE_GITIGNORE)
+    ensure_gitignore(voice_root / ".gitignore")
     ensure_state_file(voice_root)
 
     model = voice_root / MODEL_NAME
