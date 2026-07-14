@@ -326,10 +326,16 @@ def runtime_for_provider(voice_root: Path) -> tuple[Path, str]:
         return cpu_python, "cpu"
     if provider == "openvino":
         openvino_python = environment_python(voice_root / ".openvino-venv")
-        model = voice_root / "gpu_patch" / "kokoro-v1.0.fp16-gpu.openvino.onnx"
-        if openvino_python.is_file() and model.is_file():
+        models = [
+            voice_root / "gpu_patch" / "kokoro-v1.0.bert-openvino.onnx",
+            voice_root / "gpu_patch" / "kokoro-v1.0.after-bert-cpu.onnx",
+        ]
+        if openvino_python.is_file() and all(model.is_file() for model in models):
             return openvino_python, provider
-        log(voice_root, "OpenVINO provider requested but .openvino-venv or the patched FP16 GPU model is missing; using CPU")
+        log(
+            voice_root,
+            "OpenVINO provider requested but its environment or split models are missing; using CPU",
+        )
         return cpu_python, "cpu"
     if provider == "directml":
         dml_python = environment_python(voice_root / ".dml-venv")

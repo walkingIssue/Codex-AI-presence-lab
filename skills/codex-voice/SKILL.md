@@ -47,13 +47,14 @@ python "$HOME/.codex/skills/codex-voice/scripts/setup.py" --directml
 CPU is the validated baseline. The NVIDIA CUDA path uses a separate
 `.cuda-venv`, `CUDAExecutionProvider`, and the base INT8 model; it is included
 for NVIDIA users but is untested on the maintainer's hardware. The Intel
-OpenVINO path uses `.openvino-venv`, `OpenVINOExecutionProvider`, and the base
-FP16 GPU model with a generated OpenVINO graph patch. The patch promotes two
-rank-3 linear resize operations to supported rank 2 and replaces the exported
-STFT with equivalent fixed DFT convolution kernels. The runtime defaults to
-OpenVINO `HETERO:GPU,CPU` routing, while `CODEX_TTS_OPENVINO_DEVICE=GPU` forces
-the pure-GPU path. The DirectML path uses a separate `.dml-venv` and its own
-generated local graph patch.
+OpenVINO path uses `.openvino-venv`, native OpenVINO, ONNX Runtime CPU, and
+Kokoro's unquantized model. Setup splits the model at the single ALBERT output:
+the text encoder runs on Intel Arc in FP32, while duration, prosody, STFT, and
+waveform synthesis remain in the untouched CPU graph. This boundary avoids the
+audible corruption produced by monolithic OpenVINO partitioning. Set
+`CODEX_TTS_OPENVINO_DEVICE=GPU.<index>` only when choosing among multiple Intel
+GPUs. The DirectML path uses a separate `.dml-venv` and its own generated local
+graph patch.
 Do not describe the DirectML patch as an upstream Kokoro contribution yet.
 
 ## Uninstall and clean up

@@ -83,9 +83,13 @@ def validate_provider(voice_root: Path, provider: str) -> None:
                 "CUDA is not ready; run setup.py --cuda before selecting it."
             )
     if provider == "openvino":
-        if not environment_python(voice_root / ".openvino-venv").is_file() or not (
-            voice_root / "gpu_patch" / "kokoro-v1.0.fp16-gpu.openvino.onnx"
-        ).is_file():
+        openvino_models = [
+            voice_root / "gpu_patch" / "kokoro-v1.0.bert-openvino.onnx",
+            voice_root / "gpu_patch" / "kokoro-v1.0.after-bert-cpu.onnx",
+        ]
+        if not environment_python(
+            voice_root / ".openvino-venv"
+        ).is_file() or any(not model.is_file() for model in openvino_models):
             raise RuntimeError(
                 "OpenVINO is not ready; run setup.py --openvino before selecting it."
             )

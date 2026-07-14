@@ -12,9 +12,15 @@ import speak
 
 
 class ProfileTtsTests(unittest.TestCase):
-    def test_openvino_uses_provider_specific_fp16_graph(self) -> None:
+    def test_openvino_uses_cpu_synthesis_tail_and_arc_bert_graph(self) -> None:
         with patch.object(speak, "configured_provider", return_value="openvino"):
-            self.assertEqual(speak.configured_model_path(), speak.OPENVINO_MODEL_PATH)
+            self.assertEqual(
+                speak.configured_model_path(), speak.OPENVINO_TAIL_MODEL_PATH
+            )
+            self.assertEqual(
+                speak.OPENVINO_BERT_MODEL_PATH.name,
+                "kokoro-v1.0.bert-openvino.onnx",
+            )
 
     def test_request_voice_speed_and_mode_are_scoped_to_one_worker_request(self) -> None:
         observed: dict[str, object] = {}

@@ -21,7 +21,16 @@ ROOT = Path(__file__).resolve().parents[2]
 VOICE_ROOT = ROOT / ".codex-voice"
 MODEL_PATH = VOICE_ROOT / "kokoro-v1.0.int8.onnx"
 DML_MODEL_PATH = VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.int8.dml-conv2d.onnx"
-OPENVINO_MODEL_PATH = VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.fp16-gpu.openvino.onnx"
+OPENVINO_BERT_MODEL_PATH = (
+    VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.bert-openvino.onnx"
+)
+OPENVINO_TAIL_MODEL_PATH = (
+    VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.after-bert-cpu.onnx"
+)
+OPENVINO_BERT_BOUNDARY = (
+    "/encoder/bert/encoder/albert_layer_groups.0/albert_layers.0/"
+    "full_layer_layer_norm_11/LayerNormalization_output_0"
+)
 VOICES_PATH = VOICE_ROOT / "voices-v1.0.bin"
 ENABLED_MARKER = VOICE_ROOT / "enabled"
 LOG_PATH = VOICE_ROOT / "hook.log"
@@ -320,7 +329,7 @@ def configured_model_path() -> Path:
     if provider == "directml":
         return DML_MODEL_PATH
     if provider == "openvino":
-        return OPENVINO_MODEL_PATH
+        return OPENVINO_TAIL_MODEL_PATH
     return MODEL_PATH
 
 
@@ -496,6 +505,64 @@ class OrbPlaybackTimeline:
         self.orb.close()
 
 
+class OpenVinoBertSession:
+    """Run Kokoro's text encoder on Arc and its synthesis tail on ORT CPU."""
+
+    def __init__(self, bert_path: Path, tail_path: Path, device: str) -> None:
+        import onnxruntime as ort
+        import openvino as ov
+
+        normalized_device = device.strip() or "GPU"
+        if not normalized_device.upper().startswith("GPU"):
+            raise ValueError(
+                "CODEX_TTS_OPENVINO_DEVICE must select GPU or GPU.<index>"
+            )
+        core = ov.Core()
+        if not any(name.startswith("GPU") for name in core.available_devices):
+            raise RuntimeError(
+                "No Intel GPU is available to the native OpenVINO runtime"
+            )
+        bert_model = core.read_model(str(bert_path))
+        self._bert = core.compile_model(
+            bert_model,
+            normalized_device,
+            {"INFERENCE_PRECISION_HINT": "f32"},
+        )
+        self._tail = ort.InferenceSession(
+            str(tail_path),
+            providers=["CPUExecutionProvider"],
+        )
+        self._inputs = [
+            value
+            for value in self._tail.get_inputs()
+            if value.name in {"tokens", "style", "speed"}
+        ]
+        self._model_path = str(tail_path)
+
+    def get_inputs(self):
+        return self._inputs
+
+    def get_providers(self) -> list[str]:
+        return ["OpenVINO:GPU", "CPUExecutionProvider"]
+
+    def run(self, output_names, inputs: dict):
+        import numpy as np
+
+        encoded = self._bert(
+            {self._bert.input("tokens"): inputs["tokens"]}
+        )
+        bert_output = np.asarray(
+            encoded[self._bert.output(OPENVINO_BERT_BOUNDARY)]
+        )
+        return self._tail.run(
+            output_names,
+            {
+                OPENVINO_BERT_BOUNDARY: bert_output,
+                **inputs,
+            },
+        )
+
+
 def get_tts():
     """Load Kokoro once per worker process and reuse it for later messages."""
     global _TTS_CACHE
@@ -518,36 +585,20 @@ def get_tts():
             os.environ.pop("ONNX_PROVIDER", None)
         from kokoro_onnx import Kokoro
 
-        if not model_path.is_file() or not VOICES_PATH.is_file():
+        required_assets = [model_path, VOICES_PATH]
+        if provider == "openvino":
+            required_assets.append(OPENVINO_BERT_MODEL_PATH)
+        if any(not path.is_file() for path in required_assets):
             raise FileNotFoundError(
                 f"Kokoro assets for provider '{provider}' are missing under {VOICE_ROOT}."
             )
         if provider == "openvino":
-            import onnxruntime as ort
-
-            if "OpenVINOExecutionProvider" not in ort.get_available_providers():
-                raise RuntimeError(
-                    "OpenVINOExecutionProvider is unavailable in the selected runtime."
-                )
-            device = (
-                os.environ.get("CODEX_TTS_OPENVINO_DEVICE", "HETERO:GPU,CPU").strip()
-                or "HETERO:GPU,CPU"
+            device = os.environ.get("CODEX_TTS_OPENVINO_DEVICE", "GPU")
+            session = OpenVinoBertSession(
+                OPENVINO_BERT_MODEL_PATH,
+                OPENVINO_TAIL_MODEL_PATH,
+                device,
             )
-            session = ort.InferenceSession(
-                str(model_path),
-                providers=[
-                    (
-                        "OpenVINOExecutionProvider",
-                        {"device_type": device},
-                    )
-                ],
-            )
-            active_providers = session.get_providers()
-            if "OpenVINOExecutionProvider" not in active_providers:
-                raise RuntimeError(
-                    "OpenVINO session was not activated; active providers: "
-                    + ", ".join(active_providers)
-                )
             _TTS_CACHE = Kokoro.from_session(session, str(VOICES_PATH))
         else:
             _TTS_CACHE = Kokoro(str(model_path), str(VOICES_PATH))

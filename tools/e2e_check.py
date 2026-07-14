@@ -20,7 +20,7 @@ REQUIRED_FILES = (
     "scripts/configure.py",
     "scripts/activity.py",
     "scripts/setup.py",
-    "scripts/patch_openvino_graph.py",
+    "scripts/split_openvino_graph.py",
     "scripts/session_scope.py",
     "scripts/speak.py",
     "scripts/toggle.py",

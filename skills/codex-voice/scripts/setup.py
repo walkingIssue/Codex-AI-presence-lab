@@ -20,13 +20,14 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_ROOT = Path(__file__).resolve().parent
 RUNTIME_MANIFEST_NAME = "RUNTIME-MANIFEST.md"
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx"
-OPENVINO_MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16-gpu.onnx"
+OPENVINO_MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 DIRECTML_KOKORO_URL = "git+https://github.com/walkingIssue/kokoro-onnx-intel-arc.git@intel-arc-directml"
 OPENVINO_KOKORO_URL = "git+https://github.com/walkingIssue/kokoro-onnx-intel-arc.git@main"
 MODEL_NAME = "kokoro-v1.0.int8.onnx"
-OPENVINO_MODEL_NAME = "kokoro-v1.0.fp16-gpu.onnx"
-OPENVINO_PATCHED_MODEL_NAME = "kokoro-v1.0.fp16-gpu.openvino.onnx"
+OPENVINO_MODEL_NAME = "kokoro-v1.0.onnx"
+OPENVINO_BERT_MODEL_NAME = "kokoro-v1.0.bert-openvino.onnx"
+OPENVINO_TAIL_MODEL_NAME = "kokoro-v1.0.after-bert-cpu.onnx"
 VOICES_NAME = "voices-v1.0.bin"
 VOICE_GITIGNORE = """.venv/
 .cuda-venv/
@@ -390,6 +391,30 @@ def provider_check(python: Path, label: str) -> None:
     print(f"{label} providers: {providers}")
 
 
+def openvino_check(python: Path) -> None:
+    result = subprocess.run(
+        [
+            str(python),
+            "-c",
+            (
+                "import onnxruntime as ort; import openvino as ov; "
+                "devices=ov.Core().available_devices; "
+                "assert any(device.startswith('GPU') for device in devices), devices; "
+                "assert 'CPUExecutionProvider' in ort.get_available_providers(); "
+                "print('OpenVINO devices:', ','.join(devices)); "
+                "print('ONNX Runtime providers:', ','.join(ort.get_available_providers()))"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unavailable"
+        raise RuntimeError(f"Intel GPU OpenVINO validation failed: {detail}")
+    print(result.stdout.strip())
+
+
 def setup_directml(voice_root: Path, model: Path, base_python: list[str]) -> None:
     environment = voice_root / ".dml-venv"
     python = ensure_environment(environment, base_python)
@@ -441,6 +466,10 @@ def setup_cuda(voice_root: Path, base_python: list[str]) -> None:
 def setup_openvino(voice_root: Path, base_python: list[str]) -> None:
     environment = voice_root / ".openvino-venv"
     python = ensure_environment(environment, base_python)
+    run(
+        [str(python), "-m", "pip", "uninstall", "-y", "onnxruntime-openvino"],
+        check=False,
+    )
     install_requirements(python, SKILL_ROOT / "requirements-openvino.txt")
     run(
         [
@@ -454,17 +483,19 @@ def setup_openvino(voice_root: Path, base_python: list[str]) -> None:
         ]
     )
     source_model = voice_root / OPENVINO_MODEL_NAME
-    patched_model = voice_root / "gpu_patch" / OPENVINO_PATCHED_MODEL_NAME
+    bert_model = voice_root / "gpu_patch" / OPENVINO_BERT_MODEL_NAME
+    tail_model = voice_root / "gpu_patch" / OPENVINO_TAIL_MODEL_NAME
     download(OPENVINO_MODEL_URL, source_model)
     run(
         [
             str(python),
-            str(SCRIPT_ROOT / "patch_openvino_graph.py"),
+            str(SCRIPT_ROOT / "split_openvino_graph.py"),
             str(source_model),
-            str(patched_model),
+            str(bert_model),
+            str(tail_model),
         ]
     )
-    provider_check(python, "OpenVINO")
+    openvino_check(python)
 
 
 def main() -> int:

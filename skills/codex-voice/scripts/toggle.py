@@ -349,10 +349,15 @@ def main() -> int:
                 return 2
         if provider == "openvino":
             openvino_python = environment_python(voice_root / ".openvino-venv")
-            model = voice_root / "gpu_patch" / "kokoro-v1.0.fp16-gpu.openvino.onnx"
-            if not openvino_python.is_file() or not model.is_file():
+            models = [
+                voice_root / "gpu_patch" / "kokoro-v1.0.bert-openvino.onnx",
+                voice_root / "gpu_patch" / "kokoro-v1.0.after-bert-cpu.onnx",
+            ]
+            if not openvino_python.is_file() or any(
+                not model.is_file() for model in models
+            ):
                 print(
-                    "OpenVINO is not ready: expected .openvino-venv and the patched FP16 GPU graph under gpu_patch.",
+                    "OpenVINO is not ready: expected .openvino-venv and both split Kokoro graphs under gpu_patch.",
                     file=sys.stderr,
                 )
                 return 2
