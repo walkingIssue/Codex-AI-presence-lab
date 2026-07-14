@@ -27,6 +27,7 @@ from session_scope import (
     set_project_mode,
 )
 from toggle import (
+    environment_python,
     find_voice_root,
     restart_watcher,
     run_orb_script,
@@ -67,7 +68,7 @@ def validate_volume(value: int) -> int:
 def validate_provider(voice_root: Path, provider: str) -> None:
     if provider == "directml":
         if not (
-            voice_root / ".dml-venv" / "Scripts" / "python.exe"
+            environment_python(voice_root / ".dml-venv")
         ).is_file() or not (
             voice_root / "gpu_patch" / "kokoro-v1.0.int8.dml-conv2d.onnx"
         ).is_file():
@@ -76,7 +77,7 @@ def validate_provider(voice_root: Path, provider: str) -> None:
             )
     if provider == "cuda":
         if not (
-            voice_root / ".cuda-venv" / "Scripts" / "python.exe"
+            environment_python(voice_root / ".cuda-venv")
         ).is_file() or not (voice_root / "kokoro-v1.0.int8.onnx").is_file():
             raise RuntimeError(
                 "CUDA is not ready; run setup.py --cuda before selecting it."

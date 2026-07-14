@@ -37,6 +37,13 @@ INPUT_LOCK_TIMEOUT_SECONDS = 120.0
 SESSION_LABEL_TEMPLATE = "{session_name} says"
 
 
+def environment_python(root: Path) -> Path:
+    """Return the virtualenv interpreter path for the current platform."""
+    if os.name == "nt":
+        return root / "Scripts" / "python.exe"
+    return root / "bin" / "python"
+
+
 def log(voice_root: Path, message: str) -> None:
     try:
         with (voice_root / "watcher.log").open("a", encoding="utf-8") as handle:
@@ -307,16 +314,16 @@ def configured_provider(voice_root: Path) -> str:
 def runtime_for_provider(voice_root: Path) -> tuple[Path, str]:
     """Select the interpreter and model family for the project provider."""
     provider = configured_provider(voice_root)
-    cpu_python = voice_root / ".venv" / "Scripts" / "python.exe"
+    cpu_python = environment_python(voice_root / ".venv")
     if provider == "cuda":
-        cuda_python = voice_root / ".cuda-venv" / "Scripts" / "python.exe"
+        cuda_python = environment_python(voice_root / ".cuda-venv")
         model = voice_root / "kokoro-v1.0.int8.onnx"
         if cuda_python.is_file() and model.is_file():
             return cuda_python, provider
         log(voice_root, "CUDA provider requested but .cuda-venv or the base model is missing; using CPU")
         return cpu_python, "cpu"
     if provider == "directml":
-        dml_python = voice_root / ".dml-venv" / "Scripts" / "python.exe"
+        dml_python = environment_python(voice_root / ".dml-venv")
         dml_model = voice_root / "gpu_patch" / "kokoro-v1.0.int8.dml-conv2d.onnx"
         if dml_python.is_file() and dml_model.is_file():
             return dml_python, provider

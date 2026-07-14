@@ -12,9 +12,13 @@ project-local and does not modify other Python environments.
 
 If the active project has no `.codex-voice` directory, run:
 
-```powershell
+```sh
 python "$HOME/.codex/skills/codex-voice/scripts/setup.py"
 ```
+
+On Windows, the same command may be run from PowerShell. On Fedora/Linux,
+setup creates a POSIX `start_voice.sh` wrapper and uses the virtualenv's
+`bin/python` interpreter.
 
 Use `--force` only when setup reports a different existing `.codex/hooks/speak.py`.
 Use `--no-orb` when the machine should not install the optional Electron orb.
@@ -34,7 +38,7 @@ again.
 
 Provider setup options:
 
-```powershell
+```sh
 python "$HOME/.codex/skills/codex-voice/scripts/setup.py" --cuda
 python "$HOME/.codex/skills/codex-voice/scripts/setup.py" --directml
 ```
@@ -42,15 +46,19 @@ python "$HOME/.codex/skills/codex-voice/scripts/setup.py" --directml
 CPU is the validated baseline. The NVIDIA CUDA path uses a separate
 `.cuda-venv`, `CUDAExecutionProvider`, and the base INT8 model; it is included
 for NVIDIA users but is untested on the maintainer's hardware. The DirectML
-path uses a separate `.dml-venv` and a generated local graph patch. The setup
-pulls the maintained [Intel Arc Kokoro fork](https://github.com/walkingIssue/kokoro-onnx-intel-arc/tree/intel-arc-directml).
+path uses a separate `.dml-venv` and a generated local graph patch, and is
+currently Windows-only. On Fedora/Linux, setup rejects `--directml` because
+the maintained [Intel Arc Kokoro fork](https://github.com/walkingIssue/kokoro-onnx-intel-arc/tree/intel-arc-directml)
+requires ONNX Runtime's Windows `DmlExecutionProvider`; it does not provide a
+Linux Arc backend. See `docs/FEDORA-KOKORO-POC-BLOCKER.md` for the audited
+fork revision and provider probe.
 Do not describe the DirectML patch as an upstream Kokoro contribution yet.
 
 ## Uninstall and clean up
 
 To remove the project-local integration after a failed or superseded install, run:
 
-```powershell
+```sh
 python "$HOME/.codex/skills/codex-voice/scripts/uninstall.py" --yes
 ```
 

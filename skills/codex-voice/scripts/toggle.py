@@ -25,6 +25,13 @@ from session_scope import (
 WATCHER_SCRIPT = Path(__file__).with_name("watcher.py")
 
 
+def environment_python(root: Path) -> Path:
+    """Return the virtualenv interpreter path for the current platform."""
+    if os.name == "nt":
+        return root / "Scripts" / "python.exe"
+    return root / "bin" / "python"
+
+
 def find_voice_root() -> Path | None:
     current = Path.cwd().resolve()
     candidates = (current, *current.parents)
@@ -137,6 +144,21 @@ def start_watcher(voice_root: Path) -> None:
         "--start-time",
         str(time.time()),
     ]
+
+    if os.name != "nt":
+        try:
+            process = subprocess.Popen(
+                [sys.executable, *arguments],
+                cwd=str(project_root),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            return
+        watcher_pid_path(voice_root).write_text(str(process.pid), encoding="utf-8")
+        return
 
     def powershell_quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
@@ -305,7 +327,7 @@ def main() -> int:
             else "cpu"
         )
         if provider == "directml":
-            dml_python = voice_root / ".dml-venv" / "Scripts" / "python.exe"
+            dml_python = environment_python(voice_root / ".dml-venv")
             dml_model = voice_root / "gpu_patch" / "kokoro-v1.0.int8.dml-conv2d.onnx"
             if not dml_python.is_file() or not dml_model.is_file():
                 print(
@@ -314,7 +336,7 @@ def main() -> int:
                 )
                 return 2
         if provider == "cuda":
-            cuda_python = voice_root / ".cuda-venv" / "Scripts" / "python.exe"
+            cuda_python = environment_python(voice_root / ".cuda-venv")
             model = voice_root / "kokoro-v1.0.int8.onnx"
             if not cuda_python.is_file() or not model.is_file():
                 print(

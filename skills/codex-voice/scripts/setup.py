@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -82,6 +83,16 @@ def environment_python(root: Path) -> Path:
     if os.name == "nt":
         return root / "Scripts" / "python.exe"
     return root / "bin" / "python"
+
+
+def directml_supported() -> bool:
+    """Return whether the configured DirectML provider can run on this host.
+
+    The Intel Arc fork currently documents only the Windows DirectML
+    execution-provider path.  Failing early on Fedora is safer than creating
+    a misleading .dml-venv that silently falls back to CPU.
+    """
+    return os.name == "nt"
 
 
 def python_version(command: list[str]) -> tuple[int, int] | None:
@@ -313,7 +324,15 @@ def install_orb(voice_root: Path, skip: bool) -> None:
 
 
 def install_start_script(voice_root: Path) -> None:
-    shutil.copy2(SCRIPT_ROOT / "start_voice.ps1", voice_root / "start_voice.ps1")
+    if os.name == "nt":
+        source = SCRIPT_ROOT / "start_voice.ps1"
+        destination = voice_root / "start_voice.ps1"
+    else:
+        source = SCRIPT_ROOT / "start_voice.sh"
+        destination = voice_root / "start_voice.sh"
+    shutil.copy2(source, destination)
+    if os.name != "nt":
+        destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def install_activity_script(voice_root: Path) -> None:
@@ -434,6 +453,13 @@ def main() -> int:
     provider_group.add_argument("--cuda", action="store_true", help="install the untested NVIDIA CUDA 12.x path")
     provider_group.add_argument("--directml", action="store_true", help="install the experimental Intel/DirectML path")
     args = parser.parse_args()
+
+    if args.directml and not directml_supported():
+        parser.error(
+            "--directml is currently supported only on Windows: the Intel Arc "
+            "Kokoro fork requires ONNX Runtime's DmlExecutionProvider and has "
+            "no Linux-compatible provider path"
+        )
 
     project_root = args.project_root.resolve()
     base_python = select_base_python(args.python)
