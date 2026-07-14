@@ -84,7 +84,7 @@ def validate_provider(voice_root: Path, provider: str) -> None:
             )
     if provider == "openvino":
         if not environment_python(voice_root / ".openvino-venv").is_file() or not (
-            voice_root / "kokoro-v1.0.int8.onnx"
+            voice_root / "gpu_patch" / "kokoro-v1.0.fp16-gpu.openvino.onnx"
         ).is_file():
             raise RuntimeError(
                 "OpenVINO is not ready; run setup.py --openvino before selecting it."

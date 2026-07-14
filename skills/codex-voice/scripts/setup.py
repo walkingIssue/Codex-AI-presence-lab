@@ -20,10 +20,13 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_ROOT = Path(__file__).resolve().parent
 RUNTIME_MANIFEST_NAME = "RUNTIME-MANIFEST.md"
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx"
+OPENVINO_MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16-gpu.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 DIRECTML_KOKORO_URL = "git+https://github.com/walkingIssue/kokoro-onnx-intel-arc.git@intel-arc-directml"
 OPENVINO_KOKORO_URL = "git+https://github.com/walkingIssue/kokoro-onnx-intel-arc.git@main"
 MODEL_NAME = "kokoro-v1.0.int8.onnx"
+OPENVINO_MODEL_NAME = "kokoro-v1.0.fp16-gpu.onnx"
+OPENVINO_PATCHED_MODEL_NAME = "kokoro-v1.0.fp16-gpu.openvino.onnx"
 VOICES_NAME = "voices-v1.0.bin"
 VOICE_GITIGNORE = """.venv/
 .cuda-venv/
@@ -448,6 +451,17 @@ def setup_openvino(voice_root: Path, base_python: list[str]) -> None:
             "--upgrade",
             "--no-deps",
             OPENVINO_KOKORO_URL,
+        ]
+    )
+    source_model = voice_root / OPENVINO_MODEL_NAME
+    patched_model = voice_root / "gpu_patch" / OPENVINO_PATCHED_MODEL_NAME
+    download(OPENVINO_MODEL_URL, source_model)
+    run(
+        [
+            str(python),
+            str(SCRIPT_ROOT / "patch_openvino_graph.py"),
+            str(source_model),
+            str(patched_model),
         ]
     )
     provider_check(python, "OpenVINO")

@@ -48,8 +48,12 @@ CPU is the validated baseline. The NVIDIA CUDA path uses a separate
 `.cuda-venv`, `CUDAExecutionProvider`, and the base INT8 model; it is included
 for NVIDIA users but is untested on the maintainer's hardware. The Intel
 OpenVINO path uses `.openvino-venv`, `OpenVINOExecutionProvider`, and the base
-INT8 model with the GPU device selected at session creation. The DirectML path
-uses a separate `.dml-venv` and a generated local graph patch.
+FP16 GPU model with a generated OpenVINO graph patch. The patch promotes two
+rank-3 linear resize operations to supported rank 2 and replaces the exported
+STFT with equivalent fixed DFT convolution kernels. The runtime defaults to
+OpenVINO `HETERO:GPU,CPU` routing, while `CODEX_TTS_OPENVINO_DEVICE=GPU` forces
+the pure-GPU path. The DirectML path uses a separate `.dml-venv` and its own
+generated local graph patch.
 Do not describe the DirectML patch as an upstream Kokoro contribution yet.
 
 ## Uninstall and clean up

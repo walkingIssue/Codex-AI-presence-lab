@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 VOICE_ROOT = ROOT / ".codex-voice"
 MODEL_PATH = VOICE_ROOT / "kokoro-v1.0.int8.onnx"
 DML_MODEL_PATH = VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.int8.dml-conv2d.onnx"
+OPENVINO_MODEL_PATH = VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.fp16-gpu.openvino.onnx"
 VOICES_PATH = VOICE_ROOT / "voices-v1.0.bin"
 ENABLED_MARKER = VOICE_ROOT / "enabled"
 LOG_PATH = VOICE_ROOT / "hook.log"
@@ -315,7 +316,12 @@ def configured_provider() -> str:
 
 
 def configured_model_path() -> Path:
-    return DML_MODEL_PATH if configured_provider() == "directml" else MODEL_PATH
+    provider = configured_provider()
+    if provider == "directml":
+        return DML_MODEL_PATH
+    if provider == "openvino":
+        return OPENVINO_MODEL_PATH
+    return MODEL_PATH
 
 
 def clean_for_speech(value: str) -> str:
@@ -523,7 +529,10 @@ def get_tts():
                 raise RuntimeError(
                     "OpenVINOExecutionProvider is unavailable in the selected runtime."
                 )
-            device = os.environ.get("CODEX_TTS_OPENVINO_DEVICE", "GPU").strip() or "GPU"
+            device = (
+                os.environ.get("CODEX_TTS_OPENVINO_DEVICE", "HETERO:GPU,CPU").strip()
+                or "HETERO:GPU,CPU"
+            )
             session = ort.InferenceSession(
                 str(model_path),
                 providers=[
@@ -536,7 +545,7 @@ def get_tts():
             active_providers = session.get_providers()
             if "OpenVINOExecutionProvider" not in active_providers:
                 raise RuntimeError(
-                    "OpenVINO GPU session was not activated; active providers: "
+                    "OpenVINO session was not activated; active providers: "
                     + ", ".join(active_providers)
                 )
             _TTS_CACHE = Kokoro.from_session(session, str(VOICES_PATH))

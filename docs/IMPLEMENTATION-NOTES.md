@@ -22,9 +22,13 @@ The runtime is still Windows-shaped in several places:
 - the watcher reads Codex rollout JSONL files from `~/.codex/sessions`.
 
 The voice worker now has POSIX `bin/python` resolution, detached watcher
-launching, and a Linux OpenVINO environment. The Orb lifecycle still needs
-separate desktop smoke coverage before the complete companion can be called
-supported.
+launching, and a Linux OpenVINO environment. Kokoro synthesis is validated on
+an Intel Arc A770 using the FP16 GPU export plus a provider-specific graph
+rewrite for rank-3 interpolation and the export's unranked STFT boundary.
+`HETERO:GPU,CPU` is the default so supported partitions stay on Arc while
+remaining seams can execute on CPU. The Orb lifecycle still needs separate
+desktop smoke coverage before the complete
+companion can be called supported.
 
 ## Proposed companion movement design
 
@@ -58,8 +62,8 @@ PowerShell and Bash files can remain as short user-facing wrappers, but the
 behavior should live in Python so the cleanup, status, and failure handling do
 not drift between shells.
 
-The first Linux milestone targets CPU and Intel OpenVINO, with optional CUDA
-remaining a separate validation path. Electron transparency, always-on-top
+The first Linux milestone now has CPU and Intel Arc OpenVINO voice validation,
+with optional CUDA remaining a separate validation path. Electron transparency, always-on-top
 behavior, and position persistence need separate X11 and Wayland smoke tests;
 the installer should report an unsupported desktop condition clearly instead
 of claiming a fully working companion.
@@ -193,7 +197,7 @@ preserving the non-avatar quality that makes the Orb feel like a presence.
 1. Add movable-window state and an explicit move mode on Windows.
 2. Extract process and path handling from `toggle.py`, `setup.py`, and
    `configure.py` into a platform module.
-3. Add Linux CPU/OpenVINO smoke tests and Bash wrappers; then add CUDA detection.
+3. Retain Linux CPU/OpenVINO smoke coverage and Bash wrappers; then add CUDA detection.
 4. Define and test the generic JSONL adapter without changing Codex behavior.
 5. Add one external-host proof of concept before naming a stable adapter API.
 

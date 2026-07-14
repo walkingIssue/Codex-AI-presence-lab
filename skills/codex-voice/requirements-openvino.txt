@@ -1,6 +1,7 @@
 # Linux Intel GPU runtime. Kokoro is installed from the fork's Linux-capable
 # main branch by setup.py with --no-deps.
 numpy==2.5.1
+onnx==1.22.0
 onnxruntime-openvino==1.24.1
 soundfile==0.14.0
 phonemizer-fork==3.3.2

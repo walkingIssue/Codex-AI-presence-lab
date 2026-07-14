@@ -12,6 +12,10 @@ import speak
 
 
 class ProfileTtsTests(unittest.TestCase):
+    def test_openvino_uses_provider_specific_fp16_graph(self) -> None:
+        with patch.object(speak, "configured_provider", return_value="openvino"):
+            self.assertEqual(speak.configured_model_path(), speak.OPENVINO_MODEL_PATH)
+
     def test_request_voice_speed_and_mode_are_scoped_to_one_worker_request(self) -> None:
         observed: dict[str, object] = {}
 
