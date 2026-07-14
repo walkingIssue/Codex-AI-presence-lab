@@ -102,7 +102,7 @@ Additional design direction:
 - Run the voice worker and Orb on Linux without requiring PowerShell.
 - Add a platform abstraction for process launch/stop, virtual-environment paths, audio playback, hook installation, and desktop integration.
 - Keep Bash scripts as thin convenience wrappers around the platform-neutral Python runtime instead of duplicating lifecycle logic.
-- Validate CPU first, then NVIDIA CUDA where available; treat DirectML as a Windows-only provider path.
+- Validate CPU first, then Intel OpenVINO on Arc hardware; keep NVIDIA CUDA as an optional comparison path.
 - Test the Electron companion on X11 and Wayland, treating persisted absolute placement as a compatibility item until both desktop modes are verified.
 - Add macOS support only after the Linux lifecycle and audio abstractions are stable.
 

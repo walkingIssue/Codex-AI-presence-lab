@@ -82,6 +82,13 @@ def validate_provider(voice_root: Path, provider: str) -> None:
             raise RuntimeError(
                 "CUDA is not ready; run setup.py --cuda before selecting it."
             )
+    if provider == "openvino":
+        if not environment_python(voice_root / ".openvino-venv").is_file() or not (
+            voice_root / "kokoro-v1.0.int8.onnx"
+        ).is_file():
+            raise RuntimeError(
+                "OpenVINO is not ready; run setup.py --openvino before selecting it."
+            )
 
 
 def set_enabled(voice_root: Path, enabled: bool) -> None:
@@ -189,7 +196,7 @@ def show(voice_root: Path) -> None:
     print(f"  voice:    {settings['voice']} (Kokoro voice ID)")
     print(f"  speed:    {settings['speed']:.2f}x ({MIN_SPEED}-{MAX_SPEED}x)")
     print(f"  mode:     {settings['mode']} (stream or quality)")
-    print(f"  provider: {settings['provider']} (cpu, cuda, or directml)")
+    print(f"  provider: {settings['provider']} (cpu, cuda, directml, or openvino)")
     print(f"  volume:   {settings['volume']}% (main response)")
     print(f"  commentary volume: {settings['commentary_volume']}% of main volume (default {DEFAULT_COMMENTARY_VOLUME}%)")
     print(f"  progress: {'on' if settings['progress'] else 'off'}")
@@ -210,7 +217,7 @@ def interactive(voice_root: Path) -> None:
         "voice": prompt("Voice ID", settings["voice"]),
         "speed": float(prompt("Speed", settings["speed"])),
         "mode": prompt("Mode (stream/quality)", settings["mode"]).lower(),
-        "provider": prompt("Provider (cpu/cuda/directml)", settings["provider"]).lower(),
+        "provider": prompt("Provider (cpu/cuda/directml/openvino)", settings["provider"]).lower(),
         "volume": int(prompt("Volume (0-100)", settings["volume"])),
         "commentary_volume": int(prompt("Commentary volume as % of main (0-100)", settings["commentary_volume"])),
         "progress": prompt("Visible progress (on/off)", "on" if settings["progress"] else "off").lower(),
@@ -230,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     set_parser.add_argument("--voice")
     set_parser.add_argument("--speed", type=float)
     set_parser.add_argument("--mode", choices=("stream", "quality"))
-    set_parser.add_argument("--provider", choices=("cpu", "cuda", "directml"))
+    set_parser.add_argument("--provider", choices=("cpu", "cuda", "directml", "openvino"))
     set_parser.add_argument("--volume", type=int)
     set_parser.add_argument("--commentary-volume", dest="commentary_volume", type=int)
     set_parser.add_argument("--progress", choices=("on", "off"))

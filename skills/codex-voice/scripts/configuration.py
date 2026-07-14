@@ -78,6 +78,8 @@ def normalize_provider(value: str) -> str:
         return "cuda"
     if provider in {"directml", "dml", "gpu"}:
         return "directml"
+    if provider in {"openvino", "openvinoexecutionprovider", "intel", "arc", "arc-openvino"}:
+        return "openvino"
     return "cpu"
 
 

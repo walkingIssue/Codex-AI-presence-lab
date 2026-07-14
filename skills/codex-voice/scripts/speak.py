@@ -1,4 +1,4 @@
-"""Speak the final Codex response with local Kokoro TTS on Windows."""
+"""Speak the final Codex response with local Kokoro TTS."""
 
 from __future__ import annotations
 
@@ -309,6 +309,8 @@ def configured_provider() -> str:
         return "cuda"
     if environment_provider in {"directml", "dml", "gpu"}:
         return "directml"
+    if environment_provider in {"openvino", "openvinoexecutionprovider", "intel", "arc", "arc-openvino"}:
+        return "openvino"
     return DEFAULT_PROVIDER
 
 
@@ -506,7 +508,7 @@ def get_tts():
                     preload_dlls()
             except Exception as exc:
                 hook_log(f"CUDA DLL preload unavailable: {type(exc).__name__}: {exc}")
-        else:
+        elif provider != "openvino":
             os.environ.pop("ONNX_PROVIDER", None)
         from kokoro_onnx import Kokoro
 
@@ -514,7 +516,32 @@ def get_tts():
             raise FileNotFoundError(
                 f"Kokoro assets for provider '{provider}' are missing under {VOICE_ROOT}."
             )
-        _TTS_CACHE = Kokoro(str(model_path), str(VOICES_PATH))
+        if provider == "openvino":
+            import onnxruntime as ort
+
+            if "OpenVINOExecutionProvider" not in ort.get_available_providers():
+                raise RuntimeError(
+                    "OpenVINOExecutionProvider is unavailable in the selected runtime."
+                )
+            device = os.environ.get("CODEX_TTS_OPENVINO_DEVICE", "GPU").strip() or "GPU"
+            session = ort.InferenceSession(
+                str(model_path),
+                providers=[
+                    (
+                        "OpenVINOExecutionProvider",
+                        {"device_type": device},
+                    )
+                ],
+            )
+            active_providers = session.get_providers()
+            if "OpenVINOExecutionProvider" not in active_providers:
+                raise RuntimeError(
+                    "OpenVINO GPU session was not activated; active providers: "
+                    + ", ".join(active_providers)
+                )
+            _TTS_CACHE = Kokoro.from_session(session, str(VOICES_PATH))
+        else:
+            _TTS_CACHE = Kokoro(str(model_path), str(VOICES_PATH))
         hook_log(
             f"Kokoro model loaded into persistent worker provider={provider} "
             f"model={model_path.name}"

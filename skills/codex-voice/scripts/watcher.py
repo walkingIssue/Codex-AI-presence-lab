@@ -308,6 +308,8 @@ def configured_provider(voice_root: Path) -> str:
             provider = ""
     if provider in {"cuda", "cudaexecutionprovider", "nvidia", "nvidia-cuda"}:
         return "cuda"
+    if provider in {"openvino", "openvinoexecutionprovider", "intel", "arc", "arc-openvino"}:
+        return "openvino"
     return "directml" if provider in {"directml", "dml", "gpu"} else "cpu"
 
 
@@ -321,6 +323,13 @@ def runtime_for_provider(voice_root: Path) -> tuple[Path, str]:
         if cuda_python.is_file() and model.is_file():
             return cuda_python, provider
         log(voice_root, "CUDA provider requested but .cuda-venv or the base model is missing; using CPU")
+        return cpu_python, "cpu"
+    if provider == "openvino":
+        openvino_python = environment_python(voice_root / ".openvino-venv")
+        model = voice_root / "kokoro-v1.0.int8.onnx"
+        if openvino_python.is_file() and model.is_file():
+            return openvino_python, provider
+        log(voice_root, "OpenVINO provider requested but .openvino-venv or the base model is missing; using CPU")
         return cpu_python, "cpu"
     if provider == "directml":
         dml_python = environment_python(voice_root / ".dml-venv")

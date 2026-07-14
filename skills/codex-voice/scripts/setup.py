@@ -22,11 +22,13 @@ RUNTIME_MANIFEST_NAME = "RUNTIME-MANIFEST.md"
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 DIRECTML_KOKORO_URL = "git+https://github.com/walkingIssue/kokoro-onnx-intel-arc.git@intel-arc-directml"
+OPENVINO_KOKORO_URL = "git+https://github.com/walkingIssue/kokoro-onnx-intel-arc.git@main"
 MODEL_NAME = "kokoro-v1.0.int8.onnx"
 VOICES_NAME = "voices-v1.0.bin"
 VOICE_GITIGNORE = """.venv/
 .cuda-venv/
 .dml-venv/
+.openvino-venv/
 .stt-venv/
 *.wav
 *.log
@@ -433,6 +435,24 @@ def setup_cuda(voice_root: Path, base_python: list[str]) -> None:
     print("CUDA provider is configured but untested on this machine; use provider-cpu if it fails to initialize.")
 
 
+def setup_openvino(voice_root: Path, base_python: list[str]) -> None:
+    environment = voice_root / ".openvino-venv"
+    python = ensure_environment(environment, base_python)
+    install_requirements(python, SKILL_ROOT / "requirements-openvino.txt")
+    run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--no-deps",
+            OPENVINO_KOKORO_URL,
+        ]
+    )
+    provider_check(python, "OpenVINO")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
@@ -452,6 +472,7 @@ def main() -> int:
     provider_group = parser.add_mutually_exclusive_group()
     provider_group.add_argument("--cuda", action="store_true", help="install the untested NVIDIA CUDA 12.x path")
     provider_group.add_argument("--directml", action="store_true", help="install the experimental Intel/DirectML path")
+    provider_group.add_argument("--openvino", action="store_true", help="install the Intel GPU OpenVINO path")
     args = parser.parse_args()
 
     if args.directml and not directml_supported():
@@ -485,6 +506,9 @@ def main() -> int:
     elif args.directml:
         setup_directml(voice_root, model, base_python)
         provider = "directml"
+    elif args.openvino:
+        setup_openvino(voice_root, base_python)
+        provider = "openvino"
 
     if args.with_input:
         setup_input(voice_root, base_python)

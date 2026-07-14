@@ -2,4 +2,7 @@ dist/
 __pycache__/
 *.pyc
 .pytest_cache/
+.codex-voice/
+.codex/hooks/
+.codex/hooks.json
 

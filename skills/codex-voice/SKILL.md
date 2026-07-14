@@ -1,6 +1,6 @@
 ---
 name: codex-voice
-description: Set up, uninstall, and control project-local Kokoro voice output, the optional WebGL Strand Orb, and experimental custom avatar renderers for Codex, with full voice, speed, volume, commentary-volume, playback, scope, progress, and provider configuration. Use when the user asks to enable, disable, configure, install, clean up, troubleshoot, speak Codex responses aloud, or define a custom presence renderer, including CPU, NVIDIA CUDA, or Intel DirectML provider selection.
+description: Set up, uninstall, and control project-local Kokoro voice output, the optional WebGL Strand Orb, and experimental custom avatar renderers for Codex, with full voice, speed, volume, commentary-volume, playback, scope, progress, and provider configuration. Use when the user asks to enable, disable, configure, install, clean up, troubleshoot, speak Codex responses aloud, or define a custom presence renderer, including CPU, NVIDIA CUDA, Intel OpenVINO, or Intel DirectML provider selection.
 ---
 
 # Codex AI Presence
@@ -40,18 +40,16 @@ Provider setup options:
 
 ```sh
 python "$HOME/.codex/skills/codex-voice/scripts/setup.py" --cuda
+python "$HOME/.codex/skills/codex-voice/scripts/setup.py" --openvino
 python "$HOME/.codex/skills/codex-voice/scripts/setup.py" --directml
 ```
 
 CPU is the validated baseline. The NVIDIA CUDA path uses a separate
 `.cuda-venv`, `CUDAExecutionProvider`, and the base INT8 model; it is included
-for NVIDIA users but is untested on the maintainer's hardware. The DirectML
-path uses a separate `.dml-venv` and a generated local graph patch, and is
-currently Windows-only. On Fedora/Linux, setup rejects `--directml` because
-the maintained [Intel Arc Kokoro fork](https://github.com/walkingIssue/kokoro-onnx-intel-arc/tree/intel-arc-directml)
-requires ONNX Runtime's Windows `DmlExecutionProvider`; it does not provide a
-Linux Arc backend. See `docs/FEDORA-KOKORO-POC-BLOCKER.md` for the audited
-fork revision and provider probe.
+for NVIDIA users but is untested on the maintainer's hardware. The Intel
+OpenVINO path uses `.openvino-venv`, `OpenVINOExecutionProvider`, and the base
+INT8 model with the GPU device selected at session creation. The DirectML path
+uses a separate `.dml-venv` and a generated local graph patch.
 Do not describe the DirectML patch as an upstream Kokoro contribution yet.
 
 ## Uninstall and clean up
@@ -99,7 +97,7 @@ python "$HOME/.codex/skills/codex-voice/scripts/configure.py" show
 | Voice / timbre | Any installed Kokoro voice ID, such as `bf_isabella` | `bf_isabella` |
 | Speed | `0.5` to `2.0` | `1.08` |
 | Playback | `stream` or `quality` | `stream` |
-| Provider | `cpu`, `cuda`, or `directml` | `cpu` |
+| Provider | `cpu`, `cuda`, `openvino`, or `directml` | `cpu` |
 | Volume | `0` to `100` percent | `20` percent |
 | Commentary volume | `0` to `100` percent of the main volume | `50` percent |
 | Visible progress | `on` or `off` | `off` |
@@ -120,7 +118,7 @@ python "$HOME/.codex/skills/codex-voice/scripts/configure.py" interactive
 python "$HOME/.codex/skills/codex-voice/scripts/configure.py" set --voice bf_isabella --speed 1.08 --mode stream --volume 20 --commentary-volume 50
 ```
 
-`configure.py` validates provider readiness before selecting CUDA or DirectML,
+`configure.py` validates provider readiness before selecting CUDA, OpenVINO, or DirectML,
 and `scope session` requires the current `CODEX_THREAD_ID`. Visible progress
 uses the configured commentary-volume ratio of the main response volume.
 Environment variables such as
@@ -276,6 +274,7 @@ python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" stream
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" quality
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" provider-cpu
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" provider-cuda
+python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" provider-openvino
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" provider-directml
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" provider-status
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" progress-on

@@ -242,6 +242,7 @@ def main() -> int:
             "provider-cpu",
             "provider-directml",
             "provider-cuda",
+            "provider-openvino",
             "provider-status",
             "progress-on",
             "progress-off",
@@ -318,12 +319,14 @@ def main() -> int:
         print(f"Codex voice mode: {args.operation} ({voice_root})")
         return 0
 
-    if args.operation in {"provider-cpu", "provider-directml", "provider-cuda"}:
+    if args.operation in {"provider-cpu", "provider-directml", "provider-cuda", "provider-openvino"}:
         provider = (
             "directml"
             if args.operation == "provider-directml"
             else "cuda"
             if args.operation == "provider-cuda"
+            else "openvino"
+            if args.operation == "provider-openvino"
             else "cpu"
         )
         if provider == "directml":
@@ -344,6 +347,15 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 2
+        if provider == "openvino":
+            openvino_python = environment_python(voice_root / ".openvino-venv")
+            model = voice_root / "kokoro-v1.0.int8.onnx"
+            if not openvino_python.is_file() or not model.is_file():
+                print(
+                    "OpenVINO is not ready: expected .openvino-venv and the base Kokoro model.",
+                    file=sys.stderr,
+                )
+                return 2
         (voice_root / "provider").write_text(f"{provider}\n", encoding="utf-8")
         if watcher_is_running(voice_root):
             stop_watcher(voice_root)
@@ -361,6 +373,8 @@ def main() -> int:
             provider = "cuda"
         elif provider in {"directml", "dml", "gpu"}:
             provider = "directml"
+        elif provider in {"openvino", "openvinoexecutionprovider", "intel", "arc", "arc-openvino"}:
+            provider = "openvino"
         else:
             provider = "cpu"
         print(f"Codex voice provider: {provider} ({voice_root})")

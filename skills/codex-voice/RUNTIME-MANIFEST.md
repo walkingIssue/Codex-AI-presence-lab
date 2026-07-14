@@ -49,7 +49,7 @@ predate a later file.
 | Session scope | `.codex-voice/sessions.json` | Runtime-root cleanup |
 | Kokoro models | `.codex-voice/kokoro-v1.0*.onnx`, `.codex-voice/voices-v1.0.bin` | Runtime-root cleanup |
 | Provider patch | `.codex-voice/gpu_patch/` | Runtime-root cleanup |
-| Python environments | `.codex-voice/{.venv,.cuda-venv,.dml-venv}/` | Runtime-root cleanup |
+| Python environments | `.codex-voice/{.venv,.cuda-venv,.dml-venv,.openvino-venv}/` | Runtime-root cleanup |
 | Orb package | `.codex-voice/orb/` and `.codex-voice/orb/node_modules/` | Runtime-root cleanup |
 | Orb position and size | `.codex-voice/orb-position.json` | Runtime-root cleanup |
 | Runtime traces | `.codex-voice/*.log`, `.codex-voice/*.pid`, `.codex-voice/*.wav` | Runtime-root cleanup |
@@ -79,4 +79,4 @@ predate a later file.
 | `2026-07-13-adaptive-render-budget` | Caps renderer animation work at 20 FPS idle and 30 FPS active before custom avatar scripts load; values can be overridden or disabled through `CODEX_ORB_*` environment settings | Adds host modules inside the existing `.codex-voice/orb/` boundary; no external cleanup path |
 | `2026-07-13-session-presence-profiles` | Resolves session-bound avatar and Kokoro voice/speed/mode identity at Presence Service, snapshots routing fields in the durable inbox, and materializes one Electron avatar window per bound session while retaining one playback arbiter and worker | Adds the owned `presence-profiles.json`, `profiles.py`, and `configuration.py` files inside `.codex-voice`; user avatar bundles remain protected |
 | `2026-07-13-routed-avatar-windows` | Adds independently persisted session/profile avatar state, acceptance diagnostics, and window geometry; enables drag/resize on every rendered profile; raises the default idle and active animation budgets to 60 FPS after the shared Cubism renderer optimization; and moves ordered voice-control subprocesses and recording writes off Electron's main loop while removing the synchronous frame-policy IPC handshake | Adds routed `avatar-states.json` and `avatar-state-statuses.json` ledgers inside `.codex-voice`; the async control helper remains inside the existing Orb package, and per-window geometry remains in the existing `orb-position.json` artifact and cleanup boundary |
-| `2026-07-14-fedora-voice-seam` | Adds platform-aware virtualenv paths, a POSIX watcher launcher, and a POSIX voice lifecycle wrapper; rejects the unsupported Linux DirectML fork path before setup | The POSIX wrapper is inside `.codex-voice`; no new cleanup boundary |
+| `2026-07-14-fedora-voice-seam` | Adds platform-aware virtualenv paths, a POSIX watcher launcher, a POSIX voice lifecycle wrapper, and the Linux OpenVINO provider environment | The POSIX wrapper and OpenVINO environment are inside `.codex-voice`; no new cleanup boundary |
