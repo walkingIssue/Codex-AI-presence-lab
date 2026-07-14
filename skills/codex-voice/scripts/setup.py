@@ -342,6 +342,11 @@ def install_activity_script(voice_root: Path) -> None:
     shutil.copy2(SCRIPT_ROOT / "activity.py", voice_root / "activity.py")
 
 
+def install_tui_bridge(voice_root: Path) -> None:
+    """Expose the transparent TUI/server bridge from the project runtime."""
+    shutil.copy2(SCRIPT_ROOT / "tui_bridge.py", voice_root / "tui_bridge.py")
+
+
 def install_avatar_script(voice_root: Path) -> None:
     """Expose avatar bundle management from the project runtime."""
     shutil.copy2(SCRIPT_ROOT / "avatar.py", voice_root / "avatar.py")
@@ -545,6 +550,7 @@ def main() -> int:
     install_orb(voice_root, args.no_orb)
     install_start_script(voice_root)
     install_activity_script(voice_root)
+    install_tui_bridge(voice_root)
     install_avatar_script(voice_root)
     install_avatar_state_script(voice_root)
     install_profile_script(voice_root)

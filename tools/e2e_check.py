@@ -19,6 +19,7 @@ REQUIRED_FILES = (
     "scripts/configuration.py",
     "scripts/configure.py",
     "scripts/activity.py",
+    "scripts/tui_bridge.py",
     "scripts/setup.py",
     "scripts/session_scope.py",
     "scripts/speak.py",
@@ -81,12 +82,20 @@ def main() -> int:
 
     sys.path.insert(0, str(skill / "scripts"))
     from activity import classify_activity
-    from setup import ensure_gitignore, install_activity_script, install_profile_script, install_runtime_manifest
+    from setup import (
+        ensure_gitignore,
+        install_activity_script,
+        install_profile_script,
+        install_runtime_manifest,
+        install_tui_bridge,
+    )
+    from tui_bridge import MockKokoroWorker, VoiceChunkRouter
     from uninstall import read_runtime_manifest
 
     manifest_text = (skill / "RUNTIME-MANIFEST.md").read_text(encoding="utf-8")
     for required_entry in (
         ".codex-voice/activity.py",
+        ".codex-voice/tui_bridge.py",
         ".codex-voice/presence_service.py",
         ".codex-voice/presence-profiles.json",
         ".codex-voice/orb/",
@@ -108,6 +117,12 @@ def main() -> int:
             raise SystemExit(f"Activity classification failed: {record!r}")
     if classify_activity({"type": "response_item", "payload": {"type": "reasoning"}}) is not None:
         raise SystemExit("Hidden reasoning content was incorrectly exposed as an activity event")
+    worker = MockKokoroWorker()
+    router = VoiceChunkRouter(worker)
+    if not router.handle({"type": "voice/chunk", "stream_id": "e2e", "text": "visible", "sequence": 1}):
+        raise SystemExit("TUI bridge did not route a visible mock chunk")
+    if [event["type"] for event in worker.events] != ["start", "delta"]:
+        raise SystemExit("TUI bridge mock worker contract was not preserved")
     if (skill / "html").exists() or (skill / "media").exists():
         raise SystemExit("Release skill still contains showcase media")
 
@@ -127,15 +142,20 @@ def main() -> int:
         if ignore_lines.count(".venv/") != 1 or ignore_lines.count("sessions.json") != 1:
             raise SystemExit("Setup upgrade duplicated existing runtime ignore patterns")
         install_activity_script(voice_root)
+        install_tui_bridge(voice_root)
         install_profile_script(voice_root)
         install_runtime_manifest(voice_root)
         if not (voice_root / "activity.py").is_file():
             raise SystemExit("Setup did not install the activity bridge into the project runtime")
+        if not (voice_root / "tui_bridge.py").is_file():
+            raise SystemExit("Setup did not install the TUI/server bridge into the project runtime")
         if not (voice_root / "profiles.py").is_file() or not (voice_root / "configuration.py").is_file():
             raise SystemExit("Setup did not install the profile resolver into the project runtime")
         manifest_entries = read_runtime_manifest(voice_root)
         if manifest_entries is None or ".codex-voice/activity.py" not in manifest_entries:
             raise SystemExit("Setup did not install a readable runtime manifest")
+        if ".codex-voice/tui_bridge.py" not in manifest_entries:
+            raise SystemExit("Setup did not register the TUI/server bridge in the runtime manifest")
         for path in (skill / "scripts").glob("*.py"):
             shutil.copy2(path, scripts / path.name)
         (voice_root / "sessions.json").write_text(

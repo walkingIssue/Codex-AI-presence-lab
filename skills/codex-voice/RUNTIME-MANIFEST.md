@@ -25,6 +25,7 @@ predate a later file.
 | Runtime root | `.codex-voice/` | Uninstaller removes the complete directory |
 | Runtime manifest | `.codex-voice/RUNTIME-MANIFEST.md` | Runtime-root cleanup |
 | Activity bridge | `.codex-voice/activity.py` | Runtime-root cleanup |
+| Codex TUI/server bridge | `.codex-voice/tui_bridge.py` | Runtime-root cleanup |
 | Avatar manager | `.codex-voice/avatar.py` | Runtime-root cleanup |
 | Avatar state writer | `.codex-voice/avatar_state.py` | Runtime-root cleanup |
 | Avatar selection | `.codex-voice/avatar-selection.json` | Runtime-root cleanup |
@@ -80,3 +81,4 @@ predate a later file.
 | `2026-07-13-session-presence-profiles` | Resolves session-bound avatar and Kokoro voice/speed/mode identity at Presence Service, snapshots routing fields in the durable inbox, and materializes one Electron avatar window per bound session while retaining one playback arbiter and worker | Adds the owned `presence-profiles.json`, `profiles.py`, and `configuration.py` files inside `.codex-voice`; user avatar bundles remain protected |
 | `2026-07-13-routed-avatar-windows` | Adds independently persisted session/profile avatar state, acceptance diagnostics, and window geometry; enables drag/resize on every rendered profile; raises the default idle and active animation budgets to 60 FPS after the shared Cubism renderer optimization; and moves ordered voice-control subprocesses and recording writes off Electron's main loop while removing the synchronous frame-policy IPC handshake | Adds routed `avatar-states.json` and `avatar-state-statuses.json` ledgers inside `.codex-voice`; the async control helper remains inside the existing Orb package, and per-window geometry remains in the existing `orb-position.json` artifact and cleanup boundary |
 | `2026-07-14-fedora-voice-seam` | Adds platform-aware virtualenv paths, a POSIX watcher launcher, a POSIX voice lifecycle wrapper, and the Linux OpenVINO provider environment | The POSIX wrapper and OpenVINO environment are inside `.codex-voice`; no new cleanup boundary |
+| `2026-07-14-tui-bridge-seam` | Adds a transparent Codex TUI/server JSONL proxy and an injectable mock Kokoro worker contract; only visible assistant deltas cross the voice seam | The bridge remains inside `.codex-voice`; no new external cleanup boundary |

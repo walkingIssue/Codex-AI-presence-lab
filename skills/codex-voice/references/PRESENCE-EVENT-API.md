@@ -56,6 +56,31 @@ idle, thinking, tool, skill, cli, waiting, error
 Transient states expire after `ttl_ms`; a renderer should return to `idle` when
 the lease expires or when it receives an explicit idle packet.
 
+## Visual activity contract
+
+The activity lane is deliberately separate from playback and microphone input.
+Its closed state vocabulary is `idle`, `thinking`, `tool`, `skill`, `cli`,
+`waiting`, and `error`. The local classifier maps external tool work,
+web-search/function calls, and both MCP invocation boundaries to `tool`; there
+is no renderer-specific `mcp-invocation` state. Shell, terminal, and patch
+work map to `cli`. A tool completion can remain `tool` until the next lifecycle
+event or lease expiry.
+
+Default activity leases are `thinking: 12s`, `tool: 8s`, `skill: 12s`,
+`cli: 8s`, `waiting: 12s`, and `error: 4s`; `idle` uses `ttl_ms: 0`. Bridges
+clamp non-idle leases to `500..30000` ms, and renderers must safely expire
+them to idle. Adapters should refresh long-running activity with a new
+sequence and timestamp.
+
+Activity packets contain only category and routing metadata. They must never
+contain assistant text, hidden reasoning, tool names, commands, arguments,
+paths, secrets, or raw upstream payloads. Scoped packets for unknown routes
+are dropped. Unscoped activity may be shown by all avatar windows; unscoped
+`state` and `audio` are delivered only to the foreground voice-output owner.
+
+The lab repository also maintains a longer visual-layer contract covering the
+state mapping, transitions, and precedence rules.
+
 When multiple profiles are bound, the Electron host creates one avatar window
 per session binding. A `voice-output` ownership packet selects the foreground
 route before Kokoro begins:

@@ -115,8 +115,8 @@ renderer or speech contracts.
 
 - session/project identity and foreground/background state;
 - event normalization and privacy filtering;
-- operational state leases: idle, thinking, tool, skill, cli, waiting, error,
-  and speaking;
+- activity state leases: idle, thinking, tool, skill, cli, waiting, and error;
+- separate playback lifecycle: speaking/idle state packets and audio samples;
 - attention priority and one-session-at-a-time audio arbitration;
 - utterance lifecycle: planned, audio-ready, started, interrupted, finished;
 - Kokoro worker supervision and playback timing;

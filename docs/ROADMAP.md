@@ -16,14 +16,16 @@ replay, see [VOICE-INPUT-INVESTIGATION-BRIEF.md](VOICE-INPUT-INVESTIGATION-BRIEF
 - Stream and quality playback modes.
 - Runtime configuration for voice, speed, volume, commentary volume, progress, Orb, and provider.
 - Audio-synchronized Strand Orb playback.
+- Canonical activity states for thinking, tool/MCP work, skills, CLI, waiting, and errors.
+- Separate playback and input-status contracts with session-aware routing and safe TTL expiry.
+- Mocked Codex TUI/server bridge seam for visible response chunks.
 - Clean skill projection and Windows E2E gate.
 
 ## Next experiments
 
-- App-server response-delta bridge for lower-latency text-to-speech handoff.
+- Connect the TUI/server bridge to the working incremental Kokoro inference worker.
 - Optional [per-session configuration profiles](WISHLIST.md#per-session-configuration-profiles) without changing the project default.
 - Movable, persistently positioned companion window with an explicit move mode.
-- Semantic Orb states for thinking, tool activity, skill execution, and local CLI work.
 - Orb representation refinements: idle breathing, bounded asymmetry, inner attention pulse, and cadence-aware speech motion.
 - Linux CPU support, followed by optional CUDA and desktop-environment validation.
 - A host-neutral presence event bridge with Codex and generic adapters.

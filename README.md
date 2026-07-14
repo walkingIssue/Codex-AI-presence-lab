@@ -24,6 +24,7 @@ This repository is intentionally richer than the distributable skill. It holds t
 - `docs/ROADMAP.md` — current foundation and near-term experiments.
 - `docs/WISHLIST.md` — lab-only feature backlog, including per-session profiles.
 - `docs/IMPLEMENTATION-NOTES.md` — feasibility notes for movement, Linux, and host adapters.
+- `docs/VISUAL-LAYER-CONTRACT.md` — activity, playback, input-status, routing, and privacy contracts.
 - `docs/RELEASE-GATE.md` — the promotion contract.
 - `.github/workflows/e2e.yml` — reusable Windows E2E gate.
 - `.github/workflows/promote.yml` — manual, secret-gated release projection.

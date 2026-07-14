@@ -114,7 +114,7 @@ Add a separate, deliberately coarse activity event:
 }
 ```
 
-The initial state vocabulary could be:
+The canonical state vocabulary is:
 
 | State | Meaning | Suggested visual direction |
 | --- | --- | --- |
@@ -123,9 +123,15 @@ The initial state vocabulary could be:
 | `tool` | Host reports external tool activity | Amber/gold accents |
 | `skill` | A named skill/integration is active | Magenta or deep violet accents |
 | `cli` | Local command execution is active | Green/teal accents |
-| `speaking` | Audio is being played | Current amplitude deformation |
 | `waiting` | Waiting for user or host input | Dim, steady halo |
 | `error` | Non-sensitive failure state | Short red pulse, then baseline |
+
+MCP invocation, web search, and external function/tool work are all rendered
+as `tool`; `mcp-invocation` is not a separate renderer state. Local shell,
+terminal, command, and patch work are rendered as `cli`. `speaking` is a
+separate playback `state` event, not an activity value. The exact packet,
+lease, routing, precedence, and privacy rules are recorded in
+[`docs/VISUAL-LAYER-CONTRACT.md`](VISUAL-LAYER-CONTRACT.md).
 
 These are categories, not transcripts. The host adapter should emit them from
 explicit lifecycle records and never forward the underlying tool name,
@@ -143,8 +149,10 @@ stateDiagram-v2
   tool --> thinking
   skill --> thinking
   cli --> thinking
-  thinking --> speaking
-  speaking --> idle
+  thinking --> waiting
+  thinking --> idle
+  waiting --> thinking
+  waiting --> idle
   tool --> error
   skill --> error
   cli --> error
@@ -167,6 +175,21 @@ state leases with heartbeats, and expires them back to `idle`. The renderer
 keeps activity separate from audio amplitude and suppresses activity tint
 while speech is active. Explicit `skill`, `waiting`, and `error` states are
 available to future adapters through the same bridge.
+
+### TUI/server bridge seam
+
+The lab now includes `scripts/tui_bridge.py`, a transparent JSONL proxy for a
+Codex TUI or custom app-server client. It forwards the child server protocol
+unchanged and observes only `item/agentMessage/delta` plus explicit
+`voice/start`, `voice/chunk`, and `voice/finish` envelopes. These become a
+small `start -> delta* -> finish` worker contract with stream/session/turn
+identity attached. Tool, command, reasoning, and error payloads do not become
+speech input.
+
+The default worker is an in-memory mock. A later Kokoro implementation can be
+connected with `--worker-command` without changing the TUI proxy or its
+protocol forwarding behavior. This keeps the bridge testable while the
+inference path is still under development.
 
 ## Representation direction
 

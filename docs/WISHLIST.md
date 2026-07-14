@@ -52,17 +52,14 @@ Acceptance target: two simultaneous sessions in one project can use different vo
 
 ## Activity visualization states
 
-- Add a coarse visual state for model thinking or inference.
-- Distinguish tool activity, skill execution, and local CLI work with separate
-  colors or geometric signatures.
-- Keep speaking as its own audio-reactive state, with idle and waiting states
-  remaining visually calm rather than disappearing.
+The coarse visual state contract is implemented and documented in
+[`docs/VISUAL-LAYER-CONTRACT.md`](VISUAL-LAYER-CONTRACT.md). The renderer
+currently accepts `idle`, `thinking`, `tool`, `skill`, `cli`, `waiting`, and
+`error`; MCP invocation and external tool work normalize to `tool`, while
+`speaking` remains a separate playback lifecycle state.
+
 - Make the state palette part of the future visual-theme format instead of
   hard-coding one set of colors.
-- Show only the category of activity; do not expose tool names, commands, file
-  paths, arguments, hidden reasoning, or raw tool output.
-- Add heartbeat and timeout handling so a crashed adapter cannot leave the Orb
-  permanently stuck in a busy state.
 - Support nested or rapidly alternating activity without making transitions
   visually noisy.
 

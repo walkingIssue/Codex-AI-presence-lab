@@ -84,6 +84,27 @@ bridges. Future Codex app-server, Agent Client Protocol (ACP), and other host
 adapters should all target this same service instead of introducing another
 speech or presentation owner.
 
+## Codex TUI/server bridge (experimental)
+
+The project runtime includes a transparent JSONL bridge for a Codex TUI or
+custom app-server client. It forwards the child server protocol unchanged and
+observes only visible assistant-message deltas. The bridge converts those
+deltas into `start`, `delta`, `finish`, and `cancel` packets for one Kokoro
+worker seam; reasoning, tool payloads, commands, and paths are never routed to
+speech.
+
+The default worker is an in-memory mock, so the transport can be exercised
+before the inference worker is ready:
+
+```sh
+python .codex-voice/tui_bridge.py --server-command "mock-server --stdio"
+```
+
+Pass `--worker-command` when the JSONL Kokoro worker is available. The worker
+command is parsed without a shell and receives one normalized JSON object per
+line. This is a custom-client/TUI adapter path; the packaged Codex UI is not
+automatically redirected through it.
+
 ## Configuration
 
 When the user asks what can be changed, run the complete matrix first:
@@ -144,6 +165,12 @@ paths to the renderer.
 Codex rollout metadata automatically drives `thinking`, `tool`, `cli`, and
 `idle`. A host adapter or skill can emit an explicit category through the
 project-local bridge:
+
+MCP invocation, web search, and external function/tool work use `tool`; there
+is no provider-specific `mcp-invocation` renderer state. `speaking` is a
+separate playback lifecycle event, not an activity state. The full packet,
+TTL, routing, and privacy contract is in
+[references/PRESENCE-EVENT-API.md](references/PRESENCE-EVENT-API.md).
 
 ```powershell
 python .codex-voice/activity.py skill
