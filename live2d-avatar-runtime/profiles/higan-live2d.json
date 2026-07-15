@@ -56,7 +56,7 @@
     { "source_file": "\u8138\u7ea2.exp3.json", "id": "effect.blush", "label": "Blush toggle" }
   ],
   "safe_default_actions": [],
-  "initial_actions": ["pose.qipao-pipe"],
+  "initial_actions": [],
   "renderer": {
     "scale": 1.46,
     "bottom_inset": 32,
@@ -68,34 +68,13 @@
       { "part_id": "Part157", "opacity": 0 }
     ],
     "activity_actions": {
-      "idle": {
-        "add": [],
-        "suppress": ["pose.sweater-default", "pose.sweater-heart", "pose.sweater-hand-mouth-left", "pose.sweater-hand-mouth-right"]
-      },
-      "thinking": {
-        "add": ["eyes.dazed"],
-        "suppress": ["pose.sweater-default", "pose.sweater-heart", "pose.sweater-hand-mouth-left", "pose.sweater-hand-mouth-right"]
-      },
-      "cli": {
-        "add": ["motion.dynamic-1"],
-        "suppress": ["pose.sweater-default", "pose.sweater-heart", "pose.sweater-hand-mouth-left", "pose.sweater-hand-mouth-right"]
-      },
-      "skill": {
-        "add": ["eyes.heart"],
-        "suppress": ["pose.sweater-default", "pose.sweater-heart", "pose.sweater-hand-mouth-left", "pose.sweater-hand-mouth-right"]
-      },
-      "tool": {
-        "add": ["effect.dark-face"],
-        "suppress": ["pose.sweater-default", "pose.sweater-heart", "pose.sweater-hand-mouth-left", "pose.sweater-hand-mouth-right"]
-      },
-      "waiting": {
-        "add": ["motion.lean"],
-        "suppress": ["pose.sweater-default", "pose.sweater-heart", "pose.sweater-hand-mouth-left", "pose.sweater-hand-mouth-right"]
-      },
-      "error": {
-        "add": [],
-        "suppress": ["pose.sweater-default", "pose.sweater-heart", "pose.sweater-hand-mouth-left", "pose.sweater-hand-mouth-right"]
-      }
+      "idle": { "add": [], "suppress": [] },
+      "thinking": { "add": [], "suppress": [] },
+      "cli": { "add": [], "suppress": [] },
+      "skill": { "add": [], "suppress": [] },
+      "tool": { "add": [], "suppress": [] },
+      "waiting": { "add": [], "suppress": [] },
+      "error": { "add": [], "suppress": [] }
     },
     "speech_motion": {
       "targets": [

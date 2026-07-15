@@ -932,6 +932,7 @@ print(json.dumps(payload))
             };
             window.orbApi = {
               onAudioEvent(callback) { callbacks.audio = callback; },
+              onProfileCuration(callback) { callbacks.curation = callback; },
               onAvatarState(callback) { callbacks.avatar = callback; },
               onMoveMode(callback) { callbacks.move = callback; },
               onWindowResize(callback) { callbacks.resize = callback; },
@@ -1014,6 +1015,19 @@ print(json.dumps(payload))
               callbacks.audio({ type: "activity", state: "idle" });
               lifecycle.beforeModelUpdate();
               if (values.get("control.base") !== 1) throw new Error("controller action did not return after activity suppression cleared");
+              callbacks.curation({
+                schema: "codex-ai-presence/profile-curation/v0.1",
+                profile_id: "sarah",
+                route_key: "session:sarah|profile:sarah",
+                initial_actions: ["toggle.overlay"],
+                activity_actions: { cli: { suppress: [] } },
+              });
+              values.set("control.base", 0); values.set("control.overlay", 0); calls.length = 0;
+              callbacks.audio({ type: "activity", state: "cli" });
+              lifecycle.beforeModelUpdate();
+              if (values.get("control.base") !== 1 || values.get("control.overlay") !== 0) {
+                throw new Error("child curation did not clear inherited suppression without replacing routed state");
+              }
               callbacks.avatar({ avatar_id: "demo-avatar", revision: 6, actions: [] });
               calls.length = 0; setCalls.length = 0; positionCalls.length = 0; model.rotation = 0;
               callbacks.audio({ type: "state", state: "speaking" });
@@ -1037,7 +1051,7 @@ print(json.dumps(payload))
               if (!jaw || !(jaw[1] > mouth[1] && jaw[1] <= 0.76)) throw new Error("speech cadence did not reach the jaw control");
               if (positionCalls.length !== 0 || model.rotation !== 0) throw new Error("speech motion still shakes the full model node");
               if (indexLookups.length !== startupLookupCount) throw new Error("renderer repeated Cubism parameter-id scans after startup");
-              process.stdout.write(JSON.stringify({ lifecycle: true, responsiveResize: true, haloConfig: true, activityOverlay: true, activityExpiry: true, activitySuppress: true, reset: true, replacement: true, replayOrder: true, rigMotion: true, eyelids: true, jaw: true }));
+              process.stdout.write(JSON.stringify({ lifecycle: true, responsiveResize: true, haloConfig: true, activityOverlay: true, activityExpiry: true, activitySuppress: true, childCuration: true, reset: true, replacement: true, replayOrder: true, rigMotion: true, eyelids: true, jaw: true }));
             }));
             """
         )
@@ -1052,7 +1066,7 @@ print(json.dumps(payload))
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertEqual(
             json.loads(result.stdout),
-            {"lifecycle": True, "responsiveResize": True, "haloConfig": True, "activityOverlay": True, "activityExpiry": True, "activitySuppress": True, "reset": True, "replacement": True, "replayOrder": True, "rigMotion": True, "eyelids": True, "jaw": True},
+            {"lifecycle": True, "responsiveResize": True, "haloConfig": True, "activityOverlay": True, "activityExpiry": True, "activitySuppress": True, "childCuration": True, "reset": True, "replacement": True, "replayOrder": True, "rigMotion": True, "eyelids": True, "jaw": True},
         )
 
     def test_local_cubism_fork_keeps_the_per_frame_physics_loop_allocation_free(self) -> None:

@@ -25,7 +25,8 @@ labels, descriptions, renderer framing, and activity mappings, then set
 `semantic_status: "curated"`. Applying a profile with a mismatched model
 fingerprint is rejected.
 
-`renderer.halo.enabled` controls the halo. `renderer.activity_actions` maps
+`renderer.halo.enabled` controls the halo. Model-level `initial_actions` and
+`renderer.activity_actions` are the neutral parent curation. The latter maps
 known coarse states (`idle`, `thinking`, `tool`, `skill`, `cli`, `waiting`, and
 `error`) to `{ "add": [...], "suppress": [...] }` rules. Optional speech
 motion is renderer-local and must be visually validated. `renderer.fixed_parameters`
@@ -33,6 +34,12 @@ and `renderer.fixed_parts` may reassert a visually verified model-local
 watermark/accessory control every frame; they are not state-envelope actions.
 None of these values are inserted into the Voice state envelope or turn
 context.
+
+A Codex Voice presence profile may provide a semantic-only `curation` child.
+`initial_actions` replaces the parent initial set. Activity rules merge by
+state and field: a child `add` or `suppress` array replaces that parent field,
+and an explicit empty array clears it. Omitted states and fields inherit. The
+child cannot name raw parameters, parts, files, or model controls.
 
 ## State roles
 
@@ -45,6 +52,9 @@ context.
 The bridge emits only `avatar_id`, `source`, `scope`, `revision`, and `actions`,
 plus route fields when needed. The renderer reads its local capabilities after
 the host validates the selected avatar and `avatar-state-v1` capability.
+The exact route state is the leaf of the curation cascade: it replaces initial
+actions for that session, while profile-resolved activity overlays compose
+around it without changing the persisted leaf.
 
 ## Toggle policy
 

@@ -66,6 +66,7 @@ const AVATAR_STATE_SCHEMA = "codex-ai-presence/avatar-state/v0.1";
 const ROUTE_AVATAR_STATE_SCHEMA = "codex-ai-presence/avatar-state/v0.2";
 const AVATAR_STATE_LEDGER_SCHEMA = "codex-ai-presence/avatar-state-ledger/v0.1";
 const AVATAR_STATUS_LEDGER_SCHEMA = "codex-ai-presence/avatar-state-status-ledger/v0.1";
+const PROFILE_CURATION_SCHEMA = "codex-ai-presence/profile-curation/v0.1";
 const AVATAR_STATE_CAPABILITY = "avatar-state-v1";
 const ACTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const SOURCE_PATTERN = /^[A-Za-z0-9._:-]{1,80}$/;
@@ -749,6 +750,17 @@ function avatarStateForRenderer(renderer) {
   );
 }
 
+function sendProfileCuration(renderer) {
+  if (!renderer?.ready || renderer.window.isDestroyed() || !renderer.descriptor?.curation) return;
+  renderer.window.webContents.send("profile-curation", {
+    schema: PROFILE_CURATION_SCHEMA,
+    session_id: renderer.descriptor.sessionId,
+    profile_id: renderer.descriptor.profileId,
+    route_key: renderer.descriptor.key,
+    ...renderer.descriptor.curation,
+  });
+}
+
 function sendAvatarState(targetRenderer = null) {
   const renderers = targetRenderer ? [targetRenderer] : rendererWindows();
   for (const renderer of renderers) {
@@ -1136,6 +1148,7 @@ function createSecondaryWindow(descriptor, index, primaryState) {
     renderer.ready = true;
     syncSecondaryRendererScale(renderer);
     applyShortcutModes(renderer);
+    sendProfileCuration(renderer);
     sendAvatarState(renderer);
     satellite.showInactive();
     log(`renderer loaded key=${descriptor.key}`);
@@ -1230,7 +1243,8 @@ function createWindow() {
     syncRendererScale();
     const renderer = rendererForKey(activeDescriptor.key);
     if (renderer) applyShortcutModes(renderer);
-    sendAvatarState(rendererForKey(activeDescriptor.key));
+    sendProfileCuration(renderer);
+    sendAvatarState(renderer);
     windowRef.showInactive();
   });
   windowRef.on("resize", () => {

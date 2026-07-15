@@ -1,6 +1,6 @@
 ---
 manifest_schema: 1
-manifest_revision: 2026-07-15-project-route-binding-refresh
+manifest_revision: 2026-07-15-session-curation-cascade
 release_unit: codex-voice
 ---
 
@@ -100,3 +100,4 @@ predate a later file.
 | `2026-07-15-isolated-orb-endpoints` | Derives the activity/audio UDP endpoint per project voice root for renderer delivery; the endpoint no longer selects a worker | No additional artifact or cleanup boundary |
 | `2026-07-15-global-playback-arbiter` | Moves playback ownership, cross-project attention arbitration, session-transition announcements, and the persistent Kokoro worker into one user-level arbiter; project watchers become clients and pass the target Orb route per request | The daemon socket/log live in the user-level Codex voice state area and are intentionally shared; uninstalling one project must not stop it for other sessions |
 | `2026-07-15-project-route-binding-refresh` | Intersects renderer and Live2D routes with each project's enabled session registry, rejects foreign profile bindings, adds a state-preserving managed runtime refresh, and adds one-command watcher/Orb restart | Refresh removes only obsolete skill-owned runtime copies (`main.cjs`, `preload.cjs`, `styles.css`, and `watcher.py` at the runtime root); profiles, routes, providers, model assets, environments, and user avatar data remain preserved |
+| `2026-07-15-session-curation-cascade` | Adds semantic presence-profile curation overrides above neutral model-bundle defaults and below exact routed avatar state; child initial/activity fields explicitly replace parent fields, including empty arrays that clear inherited suppression | Reuses `presence-profiles.json` and the existing Orb preload/renderer bridge; no new runtime artifact or cleanup boundary |

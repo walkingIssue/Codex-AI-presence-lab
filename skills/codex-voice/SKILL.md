@@ -152,8 +152,8 @@ package in both a source checkout and a projected skill release. Read
 [`references/live2d-manifest-and-state.md`](references/live2d-manifest-and-state.md)
 before changing model profiles or lifecycle behavior.
 
-The Live2D runtime owns imported model copies, generated manifests, curated
-profiles, project bindings, and materialized renderer bundles. Codex Voice owns
+The Live2D runtime owns imported model copies, generated manifests, neutral
+model-level curation, project bindings, and materialized renderer bundles. Codex Voice owns
 the Orb, TTS, generic semantic state writer, and state delivery. Only semantic
 action IDs cross that boundary; compiled Cubism operations, model paths,
 expression filenames, hotkeys, textures, and raw controls remain renderer-local.
@@ -335,6 +335,16 @@ same composite session/profile route used by Presence Service, persisted in
 `avatar-states.json`, and delivered only to that exact avatar window. An empty
 action list resets the target avatar, and revisions are monotonic per route.
 
+Visual curation follows a parent-to-child cascade. The materialized model
+bundle is the parent and declares only reviewed neutral initial/activity
+behavior. A bound presence profile may declare semantic `curation` overrides;
+its `initial_actions` replaces the parent initial set, and each explicitly
+present `add` or `suppress` array replaces that field for the named activity.
+Empty arrays deliberately clear inherited behavior. The exact routed avatar
+state is the leaf and remains authoritative for the session's persistent pose
+and accessories. Activity overlays compose around that leaf and must not erase
+it unless the child profile explicitly asks for suppression.
+
 Avatar state is runtime-local presentation state. Do not append its status,
 active-action list, available-action list, or acceptance diagnostics to normal
 turn context or to the end of user turns. Use `avatar_state.py status` or
@@ -378,6 +388,7 @@ Create profiles and bind sessions with the managed project-local command:
 ```powershell
 py .codex-voice/profiles.py --project-root . set sol --avatar-id builtin --voice af_heart --speed 1.0 --mode stream
 py .codex-voice/profiles.py --project-root . set luna --avatar-id higan-live2d --voice bf_isabella --speed 1.2 --mode stream
+py .codex-voice/profiles.py --project-root . set luna --curation-json '{"initial_actions":["eyes.dazed","pose.sweater-default"],"activity_actions":{"idle":{"add":[],"suppress":[]},"thinking":{"add":["eyes.dazed"],"suppress":[]}}}'
 py .codex-voice/profiles.py --project-root . bind $env:CODEX_THREAD_ID luna
 py .codex-voice/profiles.py --project-root . default sol
 py .codex-voice/profiles.py --project-root . list
@@ -405,6 +416,13 @@ binding, then `project_profile_id`, then legacy project voice/avatar defaults.
 `session_id`, `thread_id`, `turn_id`, `profile_id`, and `avatar_id` remain
 separate fields. The spoken-attention owner is the composite
 `session:<id>|profile:<id>` route.
+
+Presence-profile `curation` accepts semantic action IDs only. It supports
+`initial_actions` and per-state `activity_actions` rules for `idle`,
+`thinking`, `tool`, `skill`, `cli`, `waiting`, and `error`. Raw Cubism
+parameters, expression paths, fixed parts, and arbitrary renderer controls are
+rejected. Use `--clear-curation` to remove a child override and inherit the
+model bundle again.
 
 Restart the project runtime after adding or removing bindings. It creates one
 transparent window per explicitly bound session that is also enabled by that

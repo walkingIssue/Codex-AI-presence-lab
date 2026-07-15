@@ -70,6 +70,48 @@ class ProfileRegistryTests(unittest.TestCase):
                 }
             )
 
+    def test_profile_curation_preserves_explicit_child_overrides(self) -> None:
+        document = normalize_document(
+            {
+                "schema": "codex-ai-presence/profiles/v0.1",
+                "project_profile_id": "codex",
+                "profiles": {
+                    "codex": {
+                        "avatar_id": "higan-live2d",
+                        "curation": {
+                            "initial_actions": ["eyes.dazed", "pose.sweater-default"],
+                            "activity_actions": {
+                                "idle": {"add": [], "suppress": []},
+                                "thinking": {"add": ["eyes.dazed"], "suppress": []},
+                            },
+                        },
+                    }
+                },
+                "sessions": {},
+            }
+        )
+        curation = document["profiles"]["codex"]["curation"]
+        self.assertEqual(curation["initial_actions"], ["eyes.dazed", "pose.sweater-default"])
+        self.assertEqual(curation["activity_actions"]["idle"]["suppress"], [])
+        self.assertEqual(curation["activity_actions"]["thinking"]["add"], ["eyes.dazed"])
+
+    def test_profile_curation_rejects_raw_or_unknown_controls(self) -> None:
+        for curation in (
+            {"fixed_parameters": [{"parameter_id": "Key7", "value": 1}]},
+            {"activity_actions": {"deploying": {"add": []}}},
+            {"initial_actions": ["../../model.json"]},
+            {"activity_actions": {"idle": {"suppress": ["pose.sweater-default"]}, "extra": {}}},
+        ):
+            with self.subTest(curation=curation), self.assertRaises(ProfileError):
+                normalize_document(
+                    {
+                        "schema": "codex-ai-presence/profiles/v0.1",
+                        "project_profile_id": "codex",
+                        "profiles": {"codex": {"curation": curation}},
+                        "sessions": {},
+                    }
+                )
+
     def test_session_binding_must_belong_to_the_target_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

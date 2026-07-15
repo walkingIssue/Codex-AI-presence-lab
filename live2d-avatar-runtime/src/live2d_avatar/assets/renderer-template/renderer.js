@@ -43,13 +43,13 @@
   const safeDefaults = Array.isArray(config.safe_default_operations)
     ? config.safe_default_operations.map(compileOperation).filter(Boolean)
     : [];
-  const initialActions = Array.isArray(config.initial_actions)
+  const baseInitialActions = Array.isArray(config.initial_actions)
     ? config.initial_actions.filter((actionId) => actionsById.has(actionId))
     : [];
   const renderer = config.renderer && typeof config.renderer === "object" ? config.renderer : {};
   const halo = renderer.halo && typeof renderer.halo === "object" ? renderer.halo : {};
   const haloEnabled = halo.enabled !== false;
-  const activityActions = renderer.activity_actions && typeof renderer.activity_actions === "object"
+  const baseActivityActions = renderer.activity_actions && typeof renderer.activity_actions === "object"
     ? renderer.activity_actions
     : {};
   const fixedParameters = Array.isArray(renderer.fixed_parameters)
@@ -140,9 +140,11 @@
   let viewportHeight = FALLBACK_HEIGHT;
   let baseX = viewportWidth / 2;
   let baseY = viewportHeight - 6;
-  let activeActionIds = new Set(initialActions);
+  let activeActionIds = new Set(baseInitialActions);
+  let activityActions = mergeActivityActions(baseActivityActions, {});
   let activityActionIds = new Set();
   let suppressedActionIds = new Set();
+  let avatarStateApplied = false;
   let activityExpiresAt = 0;
   let composedOperations = [];
   const parameterIndices = new Map();
@@ -158,6 +160,46 @@
 
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
+  }
+
+  function knownActionIds(value) {
+    return Array.isArray(value) ? value.filter((actionId) => actionsById.has(actionId)) : [];
+  }
+
+  function normalizedActivityRule(value) {
+    if (Array.isArray(value)) return { add: knownActionIds(value), suppress: [] };
+    if (!value || typeof value !== "object") return { add: [], suppress: [] };
+    return {
+      add: knownActionIds(value.add),
+      suppress: knownActionIds(value.suppress),
+    };
+  }
+
+  function mergeActivityActions(parent, child) {
+    const merged = {};
+    for (const state of Object.keys(colors)) {
+      const parentRule = normalizedActivityRule(parent?.[state]);
+      const childHasState = Object.prototype.hasOwnProperty.call(child || {}, state);
+      if (!childHasState) {
+        merged[state] = parentRule;
+        continue;
+      }
+      const childRule = child[state];
+      if (Array.isArray(childRule)) {
+        merged[state] = { add: knownActionIds(childRule), suppress: [] };
+        continue;
+      }
+      const normalizedChild = normalizedActivityRule(childRule);
+      merged[state] = {
+        add: Object.prototype.hasOwnProperty.call(childRule || {}, "add")
+          ? normalizedChild.add
+          : parentRule.add,
+        suppress: Object.prototype.hasOwnProperty.call(childRule || {}, "suppress")
+          ? normalizedChild.suppress
+          : parentRule.suppress,
+      };
+    }
+    return merged;
   }
 
   function viewportDimension(value, fallback) {
@@ -257,6 +299,13 @@
     composedOperations = overwrite.concat(add, multiply);
   }
 
+  function applyActivityRule() {
+    const rule = normalizedActivityRule(activityActions[activity]);
+    activityActionIds = new Set(rule.add);
+    suppressedActionIds = new Set(rule.suppress);
+    rebuildComposedOperations();
+  }
+
   function setActivity(nextActivity, ttlMs = 0) {
     if (!Object.prototype.hasOwnProperty.call(colors, nextActivity)) return;
     const requestedTtl = Number(ttlMs);
@@ -269,19 +318,7 @@
       return;
     }
     activity = nextActivity;
-    const mappedActions = activityActions[activity];
-    const rule = Array.isArray(mappedActions)
-      ? { add: mappedActions, suppress: [] }
-      : mappedActions && typeof mappedActions === "object"
-        ? mappedActions
-        : { add: [], suppress: [] };
-    activityActionIds = new Set(
-      Array.isArray(rule.add) ? rule.add.filter((actionId) => actionsById.has(actionId)) : [],
-    );
-    suppressedActionIds = new Set(
-      Array.isArray(rule.suppress) ? rule.suppress.filter((actionId) => actionsById.has(actionId)) : [],
-    );
-    rebuildComposedOperations();
+    applyActivityRule();
     activityExpiresAt = activity === "idle" || boundedTtl === 0 ? 0 : performance.now() + boundedTtl;
     document.documentElement.style.setProperty("--accent", colors[activity]);
   }
@@ -348,11 +385,28 @@
 
   function applyAvatarState(state) {
     if (!state || state.avatar_id !== config.avatar_id || !Array.isArray(state.actions)) return;
+    avatarStateApplied = true;
     activeActionIds = new Set(state.actions.filter((actionId) => actionsById.has(actionId)));
     rebuildComposedOperations();
     console.info("Live2D avatar state applied", {
       revision: Number.isInteger(state.revision) ? state.revision : null,
       actions: actionsInReplayOrder.filter((action) => activeActionIds.has(action.id)).map((action) => action.id),
+    });
+  }
+
+  function applyProfileCuration(curation) {
+    if (!curation || curation.schema !== "codex-ai-presence/profile-curation/v0.1") return;
+    if (!avatarStateApplied && Object.prototype.hasOwnProperty.call(curation, "initial_actions")) {
+      activeActionIds = new Set(knownActionIds(curation.initial_actions));
+    }
+    const childActivity = curation.activity_actions && typeof curation.activity_actions === "object"
+      ? curation.activity_actions
+      : {};
+    activityActions = mergeActivityActions(baseActivityActions, childActivity);
+    applyActivityRule();
+    console.info("Live2D profile curation applied", {
+      profile_id: curation.profile_id || null,
+      route_key: curation.route_key || null,
     });
   }
 
@@ -460,6 +514,7 @@
   function attachOrbBridge() {
     if (!window.orbApi) return;
     window.orbApi.onAudioEvent(applyAudioEvent);
+    window.orbApi.onProfileCuration?.(applyProfileCuration);
     window.orbApi.onAvatarState?.(applyAvatarState);
     window.orbApi.onMoveMode(setMoveMode);
     window.orbApi.onResizeMode?.(setResizeMode);
@@ -509,7 +564,7 @@
     const updatePriority = Number(PIXI.UPDATE_PRIORITY?.HIGH) || 25;
     app.ticker.add(() => model.update(app.ticker.elapsedMS), null, updatePriority);
     app.start();
-    setActivity("idle");
+    applyActivityRule();
     console.info("Live2D avatar state renderer ready", config.avatar_id);
   }
 

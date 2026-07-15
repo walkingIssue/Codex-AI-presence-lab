@@ -95,6 +95,16 @@ def main() -> int:
         raise SystemExit("Orb interaction mode border is incomplete")
     if "activeAvatar?.stateSupported" not in orb_main or 'send("window-resize", { width, height });' not in orb_main:
         raise SystemExit("Avatar-local resize contract is incomplete")
+    if 'webContents.send("profile-curation"' not in orb_main or "onProfileCuration" not in orb_preload:
+        raise SystemExit("Session-profile curation IPC is incomplete")
+    live2d_root = skill / "live2d-avatar-runtime"
+    if not live2d_root.is_dir():
+        live2d_root = source / "live2d-avatar-runtime"
+    live2d_renderer = (
+        live2d_root / "src" / "live2d_avatar" / "assets" / "renderer-template" / "renderer.js"
+    ).read_text(encoding="utf-8")
+    if "mergeActivityActions" not in live2d_renderer or "applyProfileCuration" not in live2d_renderer:
+        raise SystemExit("Live2D child-curation cascade is incomplete")
     skill_text = (skill / "SKILL.md").read_text(encoding="utf-8")
     if "name: codex-voice" not in skill_text or "configure.py" not in skill_text:
         raise SystemExit("Skill metadata/configuration instructions are incomplete")
@@ -280,9 +290,17 @@ def main() -> int:
                 "af_heart",
                 "--speed",
                 "1.2",
+                "--curation-json",
+                '{"initial_actions":["pose.sweater-default"],"activity_actions":{"idle":{"suppress":[]}}}',
             ],
             project,
         )
+        profile_document = json.loads((voice_root / "presence-profiles.json").read_text(encoding="utf-8"))
+        curation = profile_document["profiles"]["luna"]["curation"]
+        if curation["initial_actions"] != ["pose.sweater-default"]:
+            raise SystemExit("Session profile did not persist its semantic curation override")
+        if curation["activity_actions"]["idle"]["suppress"] != []:
+            raise SystemExit("Session profile did not preserve an explicit empty child override")
         run(
             [
                 sys.executable,

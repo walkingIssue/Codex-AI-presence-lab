@@ -21,6 +21,9 @@ PROFILE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 AVATAR_ID_PATTERN = PROFILE_ID_PATTERN
 VOICE_PATTERN = re.compile(r"^[a-z]{2}_[a-z0-9_]+$")
 MODES = {"stream", "quality"}
+ACTIVITY_STATES = {"idle", "thinking", "tool", "skill", "cli", "waiting", "error"}
+ACTION_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+MAX_CURATION_ACTIONS = 128
 
 
 class ProfileError(RuntimeError):
@@ -59,10 +62,65 @@ def _profile_id(value: object, *, field: str = "profile id") -> str:
     return value.strip()
 
 
+def _curation_actions(value: object, *, field: str) -> list[str]:
+    if not isinstance(value, list) or len(value) > MAX_CURATION_ACTIONS:
+        raise ProfileError(f"{field} must be an array of at most {MAX_CURATION_ACTIONS} action ids")
+    normalized: list[str] = []
+    for action_id in value:
+        if not isinstance(action_id, str) or not ACTION_ID_PATTERN.fullmatch(action_id):
+            raise ProfileError(f"{field} contains an invalid action id")
+        if action_id in normalized:
+            raise ProfileError(f"{field} contains duplicate action id {action_id}")
+        normalized.append(action_id)
+    return normalized
+
+
+def _validate_curation(profile_id: str, value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ProfileError(f"profile {profile_id} curation must be an object")
+    unknown = sorted(set(value) - {"initial_actions", "activity_actions"})
+    if unknown:
+        raise ProfileError(f"profile {profile_id} curation has unsupported fields: {', '.join(unknown)}")
+    normalized: dict[str, object] = {}
+    if "initial_actions" in value:
+        normalized["initial_actions"] = _curation_actions(
+            value["initial_actions"], field=f"profile {profile_id} curation.initial_actions"
+        )
+    if "activity_actions" in value:
+        raw_activity = value["activity_actions"]
+        if not isinstance(raw_activity, dict):
+            raise ProfileError(f"profile {profile_id} curation.activity_actions must be an object")
+        unknown_states = sorted(set(raw_activity) - ACTIVITY_STATES)
+        if unknown_states:
+            raise ProfileError(
+                f"profile {profile_id} curation has unsupported activity states: {', '.join(unknown_states)}"
+            )
+        activity: dict[str, dict[str, list[str]]] = {}
+        for state, raw_rule in raw_activity.items():
+            if not isinstance(raw_rule, dict):
+                raise ProfileError(f"profile {profile_id} curation activity {state} must be an object")
+            unknown_rule_fields = sorted(set(raw_rule) - {"add", "suppress"})
+            if unknown_rule_fields:
+                raise ProfileError(
+                    f"profile {profile_id} curation activity {state} has unsupported fields: "
+                    + ", ".join(unknown_rule_fields)
+                )
+            rule: dict[str, list[str]] = {}
+            for field in ("add", "suppress"):
+                if field in raw_rule:
+                    rule[field] = _curation_actions(
+                        raw_rule[field],
+                        field=f"profile {profile_id} curation.activity_actions.{state}.{field}",
+                    )
+            activity[state] = rule
+        normalized["activity_actions"] = activity
+    return normalized
+
+
 def _validate_profile(profile_id: str, value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ProfileError(f"profile {profile_id} must be an object")
-    allowed = {"avatar_id", "voice", "speed", "mode"}
+    allowed = {"avatar_id", "voice", "speed", "mode", "curation"}
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise ProfileError(f"profile {profile_id} has unsupported fields: {', '.join(unknown)}")
@@ -92,6 +150,8 @@ def _validate_profile(profile_id: str, value: object) -> dict[str, object]:
         if normalized_mode not in MODES:
             raise ProfileError(f"profile {profile_id} mode must be stream or quality")
         normalized["mode"] = normalized_mode
+    if "curation" in value:
+        normalized["curation"] = _validate_curation(profile_id, value["curation"])
     return normalized
 
 
@@ -249,6 +309,13 @@ def command_set(args: argparse.Namespace) -> int:
         value = getattr(args, key)
         if value is not None:
             current[key] = value
+    if args.clear_curation:
+        current.pop("curation", None)
+    elif args.curation_json is not None:
+        try:
+            current["curation"] = json.loads(args.curation_json)
+        except json.JSONDecodeError as exc:
+            raise ProfileError(f"curation JSON is invalid: {exc.msg}") from exc
     profiles[profile_id] = _validate_profile(profile_id, current)
     write_document(args.voice_root, document)
     print(f"Saved profile {profile_id}")
@@ -322,6 +389,12 @@ def build_parser() -> argparse.ArgumentParser:
     set_profile.add_argument("--voice")
     set_profile.add_argument("--speed", type=float)
     set_profile.add_argument("--mode", choices=tuple(sorted(MODES)))
+    curation = set_profile.add_mutually_exclusive_group()
+    curation.add_argument(
+        "--curation-json",
+        help="semantic initial/activity overrides as a JSON object; empty arrays explicitly clear parent fields",
+    )
+    curation.add_argument("--clear-curation", action="store_true")
     set_profile.set_defaults(handler=command_set)
     bind = commands.add_parser("bind")
     bind.add_argument("session_id")

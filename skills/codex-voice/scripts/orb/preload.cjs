@@ -597,6 +597,15 @@ contextBridge.exposeInMainWorld("orbApi", {
     ipcRenderer.on("avatar-state", listener);
     return () => ipcRenderer.removeListener("avatar-state", listener);
   },
+  onProfileCuration(callback) {
+    const listener = (_event, payload) => {
+      applyFrameMode("active");
+      callback(payload);
+      applyFrameMode("idle", 1000);
+    };
+    ipcRenderer.on("profile-curation", listener);
+    return () => ipcRenderer.removeListener("profile-curation", listener);
+  },
   onMoveMode(callback) {
     const listener = (_event, payload) => {
       const enabled = enabledFromPayload(payload);

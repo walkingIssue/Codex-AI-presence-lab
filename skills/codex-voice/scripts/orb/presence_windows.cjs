@@ -2,9 +2,66 @@
 
 const PROFILE_SCHEMA = "codex-ai-presence/profiles/v0.1";
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const ACTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+const ACTIVITY_STATES = new Set(["idle", "thinking", "tool", "skill", "cli", "waiting", "error"]);
+const MAX_CURATION_ACTIONS = 128;
 
 function validId(value, fallback) {
   return typeof value === "string" && ID_PATTERN.test(value) ? value : fallback;
+}
+
+function curationActions(value) {
+  if (!Array.isArray(value) || value.length > MAX_CURATION_ACTIONS) return null;
+  if (!value.every((actionId) => typeof actionId === "string" && ACTION_ID_PATTERN.test(actionId))) return null;
+  if (new Set(value).size !== value.length) return null;
+  return [...value];
+}
+
+function profileCuration(profile) {
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null;
+  const raw = profile.curation;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (Object.keys(raw).some((key) => !["initial_actions", "activity_actions"].includes(key))) return null;
+  const normalized = {};
+  if (Object.prototype.hasOwnProperty.call(raw, "initial_actions")) {
+    const actions = curationActions(raw.initial_actions);
+    if (!actions) return null;
+    normalized.initial_actions = actions;
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, "activity_actions")) {
+    if (!raw.activity_actions || typeof raw.activity_actions !== "object" || Array.isArray(raw.activity_actions)) {
+      return null;
+    }
+    const activityActions = {};
+    for (const [state, rawRule] of Object.entries(raw.activity_actions)) {
+      if (!ACTIVITY_STATES.has(state) || !rawRule || typeof rawRule !== "object" || Array.isArray(rawRule)) {
+        return null;
+      }
+      if (Object.keys(rawRule).some((key) => !["add", "suppress"].includes(key))) return null;
+      const rule = {};
+      for (const field of ["add", "suppress"]) {
+        if (!Object.prototype.hasOwnProperty.call(rawRule, field)) continue;
+        const actions = curationActions(rawRule[field]);
+        if (!actions) return null;
+        rule[field] = actions;
+      }
+      activityActions[state] = rule;
+    }
+    normalized.activity_actions = activityActions;
+  }
+  return normalized;
+}
+
+function descriptorForProfile(sessionId, profileId, profile, fallbackAvatarId) {
+  const descriptor = {
+    key: `session:${sessionId || "unscoped"}|profile:${profileId}`,
+    sessionId: sessionId || null,
+    profileId,
+    avatarId: validId(profile?.avatar_id, fallbackAvatarId),
+  };
+  const curation = profileCuration(profile);
+  if (curation) descriptor.curation = curation;
+  return descriptor;
 }
 
 function windowDescriptors(document, selectedAvatarId = "builtin", eligibleSessionIds = null) {
@@ -43,12 +100,7 @@ function windowDescriptors(document, selectedAvatarId = "builtin", eligibleSessi
     const profile = profiles[profileId] && typeof profiles[profileId] === "object"
       ? profiles[profileId]
       : projectProfile;
-    descriptors.push({
-      key: `session:${sessionId}|profile:${profileId}`,
-      sessionId,
-      profileId,
-      avatarId: validId(profile.avatar_id, fallbackAvatarId),
-    });
+    descriptors.push(descriptorForProfile(sessionId, profileId, profile, fallbackAvatarId));
   }
   if (descriptors.length) return descriptors;
   // Once a project has explicit session bindings, an enabled-session filter
@@ -57,20 +109,10 @@ function windowDescriptors(document, selectedAvatarId = "builtin", eligibleSessi
   if (eligible && configuredSessionIds.length) return [];
   if (eligible && eligible.size === 1) {
     const [sessionId] = eligible;
-    return [{
-      key: `session:${sessionId}|profile:${projectProfileId}`,
-      sessionId,
-      profileId: projectProfileId,
-      avatarId: validId(projectProfile.avatar_id, fallbackAvatarId),
-    }];
+    return [descriptorForProfile(sessionId, projectProfileId, projectProfile, fallbackAvatarId)];
   }
   if (eligible && eligible.size !== 1) return [];
-  return [{
-    key: `session:unscoped|profile:${projectProfileId}`,
-    sessionId: null,
-    profileId: projectProfileId,
-    avatarId: validId(projectProfile.avatar_id, fallbackAvatarId),
-  }];
+  return [descriptorForProfile(null, projectProfileId, projectProfile, fallbackAvatarId)];
 }
 
 function routeWindowKeys(descriptors, event, foregroundKey = null) {
@@ -108,4 +150,4 @@ function avatarStateForWindow(descriptor, avatarId, routedStates, projectState =
   return projectState?.avatar_id === avatarId ? projectState : null;
 }
 
-module.exports = { avatarStateForWindow, routeWindowKeys, windowDescriptors };
+module.exports = { avatarStateForWindow, profileCuration, routeWindowKeys, windowDescriptors };
