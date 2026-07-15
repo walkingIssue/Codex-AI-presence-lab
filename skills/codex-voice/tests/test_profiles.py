@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from profiles import ProfileError, ProfileRegistry, normalize_document, write_document
+from profiles import ProfileError, ProfileRegistry, normalize_document, require_project_session, write_document
 
 
 class ProfileRegistryTests(unittest.TestCase):
@@ -69,6 +69,36 @@ class ProfileRegistryTests(unittest.TestCase):
                     "sessions": {"session-a": "missing"},
                 }
             )
+
+    def test_session_binding_must_belong_to_the_target_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            voice_root = root / ".codex-voice"
+            voice_root.mkdir()
+            (voice_root / "sessions.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "mode": "session",
+                        "sessions": {
+                            "session-local": {
+                                "enabled": True,
+                                "project_root": str(root),
+                            },
+                            "session-foreign": {
+                                "enabled": True,
+                                "project_root": str(root.parent / "other"),
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            require_project_session(root, voice_root, "session-local")
+            with self.assertRaisesRegex(ProfileError, "is not enabled"):
+                require_project_session(root, voice_root, "session-missing")
+            with self.assertRaisesRegex(ProfileError, "belongs to"):
+                require_project_session(root, voice_root, "session-foreign")
 
 
 if __name__ == "__main__":

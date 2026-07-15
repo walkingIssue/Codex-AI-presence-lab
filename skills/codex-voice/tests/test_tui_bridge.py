@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from tui_bridge import BRIDGE_SCHEMA, MockKokoroWorker, TuiServerBridge, VoiceChunkRouter
+from inbox import Inbox, database_path
+from tui_bridge import ArbiterInboxAdapter, BRIDGE_SCHEMA, MockKokoroWorker, TuiServerBridge, VoiceChunkRouter
 
 
 class TuiBridgeTests(unittest.TestCase):
@@ -146,6 +147,31 @@ class TuiBridgeTests(unittest.TestCase):
             )
         )
         self.assertEqual(worker.events[-1]["type"], "finish")
+
+    def test_stock_adapter_enqueues_into_shared_arbiter_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            voice = project / ".codex-voice"
+            voice.mkdir(parents=True)
+            (voice / "enabled").write_text("on\n", encoding="utf-8")
+            (voice / "volume").write_text("37\n", encoding="utf-8")
+            adapter = ArbiterInboxAdapter(project, voice)
+
+            self.assertTrue(adapter.start())
+            self.assertTrue(adapter.send({"type": "start", "stream_id": "s:t", "session_id": "s", "turn_id": "t"}))
+            self.assertTrue(adapter.send({"type": "delta", "stream_id": "s:t", "text": "Hello"}))
+            self.assertTrue(adapter.send({"type": "delta", "stream_id": "s:t", "text": " world"}))
+            self.assertTrue(adapter.send({"type": "finish", "stream_id": "s:t"}))
+
+            message = Inbox(database_path(voice)).claim_next()
+            self.assertIsNotNone(message)
+            assert message is not None
+            self.assertEqual(message["text"], "Hello world")
+            self.assertEqual(message["session_id"], "s")
+            self.assertEqual(message["turn_id"], "t")
+            self.assertEqual(message["volume"], 37)
+            adapter.close()
 
     def test_item_completion_can_add_identity_missing_from_delta(self) -> None:
         worker, router = self.make_router()

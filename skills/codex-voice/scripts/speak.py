@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import queue
 import re
@@ -36,6 +37,8 @@ PROVIDER_CONFIG_PATH = VOICE_ROOT / "provider"
 VOLUME_CONFIG_PATH = VOICE_ROOT / "volume"
 ORB_ENABLED_MARKER = VOICE_ROOT / "orb.enabled"
 DEFAULT_ORB_PORT = 17831
+ORB_PORT_MIN = 20000
+ORB_PORT_SPAN = 30000
 DEFAULT_VOICE = "bf_isabella"
 DEFAULT_MODE = "stream"
 DEFAULT_SPEED = 1.08
@@ -367,12 +370,31 @@ def orb_is_enabled() -> bool:
     return value in {"1", "true", "on", "enabled"}
 
 
-def orb_socket() -> socket.socket | None:
-    if not orb_is_enabled():
+def orb_socket(port: int | None = None) -> socket.socket | None:
+    """Open a connected local UDP socket for the selected renderer.
+
+    The global arbiter supplies the destination per speech request.  Direct
+    project-local hooks retain the marker-gated behavior when no destination
+    is supplied.
+    """
+    if port is None and not orb_is_enabled():
+        return None
+    if port is None:
+        configured = os.environ.get("CODEX_ORB_PORT")
+        try:
+            port = int(configured) if configured else 0
+        except ValueError:
+            port = 0
+        if not 1024 <= port <= 65535:
+            canonical_root = str(VOICE_ROOT.expanduser().resolve())
+            digest = hashlib.sha256(canonical_root.encode("utf-8")).digest()
+            port = ORB_PORT_MIN + int.from_bytes(digest[:4], "big") % ORB_PORT_SPAN
+    if not isinstance(port, int) or not 1024 <= port <= 65535:
         return None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setblocking(False)
+        sock.connect(("127.0.0.1", port))
         return sock
     except OSError:
         return None
@@ -382,9 +404,8 @@ def orb_send(sock: socket.socket | None, payload: dict) -> None:
     if sock is None:
         return
     try:
-        port = int(os.environ.get("CODEX_ORB_PORT", str(DEFAULT_ORB_PORT)))
         message = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        sock.sendto(message, ("127.0.0.1", port))
+        sock.send(message)
     except (OSError, ValueError):
         pass
 
@@ -582,6 +603,7 @@ def stream_audio(
     event_id: str | None = None,
     interruptible: bool = True,
     pauseable: bool = False,
+    orb_port: int | None = None,
 ) -> None:
     """Generate PCM independently and feed a pauseable, frame-paced OS sink."""
     import asyncio
@@ -601,7 +623,7 @@ def stream_audio(
     speed = configured_speed()
     volume = configured_volume()
     tts = get_tts()
-    orb = orb_socket()
+    orb = orb_socket(orb_port)
 
     async def consume() -> None:
         audio_queue: asyncio.Queue[tuple[object, int] | None] = asyncio.Queue()
@@ -830,11 +852,12 @@ def play_audio(
     event_id: str | None = None,
     text: str | None = None,
     interruptible: bool = True,
+    orb_port: int | None = None,
 ) -> None:
     ffplay = ffplay_executable()
     if ffplay:
         volume = configured_volume()
-        if orb_is_enabled():
+        if orb_port is not None or orb_is_enabled():
             player: subprocess.Popen[bytes] | None = None
             timeline: OrbPlaybackTimeline | None = None
             completed = False
@@ -844,7 +867,7 @@ def play_audio(
                 audio, sample_rate = sf.read(
                     str(audio_path), dtype="float32", always_2d=False
                 )
-                timeline = OrbPlaybackTimeline(orb_socket(), int(sample_rate))
+                timeline = OrbPlaybackTimeline(orb_socket(orb_port), int(sample_rate))
                 player = subprocess.Popen(
                     [
                         ffplay,
@@ -972,7 +995,7 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
     if transcript_watcher_is_active():
         hook_log("skipped: desktop transcript watcher active")
         return done()
-    if not voice_is_enabled():
+    if not voice_is_enabled() and os.environ.get("CODEX_TTS_FROM_ARBITER") != "1":
         hook_log("skipped: voice disabled")
         return done()
 
@@ -991,6 +1014,13 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
     event_id = event_id.strip() if isinstance(event_id, str) and event_id.strip() else None
     pauseable = bool(payload.get("tts_pauseable"))
     interruptible = not pauseable
+    orb_port: int | None = None
+    try:
+        requested_orb_port = int(payload.get("tts_orb_port"))
+        if 1024 <= requested_orb_port <= 65535:
+            orb_port = requested_orb_port
+    except (TypeError, ValueError):
+        pass
     try:
         hook_log(
             f"speaking: {len(text)} characters mode={configured_mode()} "
@@ -1004,6 +1034,7 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
                 event_id=event_id,
                 interruptible=interruptible,
                 pauseable=pauseable,
+                orb_port=orb_port,
             )
         else:
             audio_path = generate_audio(text)
@@ -1012,6 +1043,7 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
                 event_id=event_id,
                 text=text,
                 interruptible=interruptible,
+                orb_port=orb_port,
             )
         hook_log("completed")
     except PlaybackInterrupted:

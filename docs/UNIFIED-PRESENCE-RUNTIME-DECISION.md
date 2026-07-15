@@ -145,6 +145,13 @@ The service extraction should not require the user-facing skill to disappear.
 - materializing and updating a Live2D renderer bundle;
 - the renderer-specific adapter that consumes generic service events.
 
+In this lab, that runtime is a first-class source package under
+`live2d-avatar-runtime/`. The package boundary is internal to this repository,
+but its ownership boundary remains explicit: the runtime owns model-local
+profiles, compiled operations, and materialized bundles, while `codex-voice`
+continues to own the generic host and avatar-state bridge. The source package
+does not include the upstream `.git` directory or user-owned model assets.
+
 It must not own the global inbox, TTS worker, session focus, or Electron host
 lifecycle. It may request or publish generic state through the managed bridge.
 
@@ -212,11 +219,12 @@ Create a local service boundary around the existing implementation with:
 Initially, the adapter is the existing watcher. The service should be able to
 run the current Orb and Live2D renderer without changing their event payloads.
 
-The first local shell now exists: `presence_service.py` owns the lifecycle
-state, sanitized activity publication, speech-envelope handoff, and completion
-draining while the existing `PlaybackArbiter` remains the sole inbox/playback
-owner. Renderer supervision and the future app-server adapter remain later
-steps, so this slice does not pretend the full target topology is complete.
+The local shell now has a user-level global playback arbiter: project-local
+watchers own rollout cursors and adapter inboxes, while the arbiter owns the
+cross-project serialized attention queue, session-transition announcements, completion
+delivery, and exactly one warm Kokoro worker. Renderer supervision and the
+future app-server adapter remain separate concerns; they must connect to this
+arbiter rather than create another worker.
 
 ### Phase 2 - add the Codex app-server adapter beside the current adapter
 

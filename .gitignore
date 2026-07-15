@@ -1,8 +1,14 @@
 dist/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
+.venv/
+build/
+*.egg-info/
+local-registry/
 .codex-voice/
+.codex-live2d/
+.codex-voice-avatars/
 .codex/hooks/
 .codex/hooks.json
 

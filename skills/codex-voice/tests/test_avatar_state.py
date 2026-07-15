@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from avatar_state import AvatarStateError, sync_state, write_state
+from avatar_state import AvatarStateError, status, sync_state, write_state
 
 
 class AvatarStateRoutingTests(unittest.TestCase):
@@ -105,6 +105,16 @@ class AvatarStateRoutingTests(unittest.TestCase):
             )
             self.assertEqual(replay["route_key"], "session:session-a|profile:luna")
             self.assertEqual(replay["revision"], 3)
+
+    def test_status_is_explicit_and_does_not_mutate_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.project(directory)
+            write_state(self.args(root, "session-a", 1, ["pose.a"]))
+            before = (root / ".codex-voice" / "avatar-states.json").read_text(encoding="utf-8")
+            result = status(argparse.Namespace(project_root=root, session_id="session-a", profile_id="luna"))
+            after = (root / ".codex-voice" / "avatar-states.json").read_text(encoding="utf-8")
+            self.assertEqual(result["routed_state"]["actions"], ["pose.a"])
+            self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,36 @@ test("materializes one avatar window per bound session", () => {
   ]);
 });
 
+test("materializes only bindings enabled by the owning project session registry", () => {
+  const document = {
+    schema: "codex-ai-presence/profiles/v0.1",
+    project_profile_id: "codex",
+    profiles: { codex: { avatar_id: "higan-live2d" } },
+    sessions: {
+      "session-local": { profile_id: "codex" },
+      "session-foreign": { profile_id: "codex" },
+    },
+  };
+  const descriptors = windowDescriptors(document, "builtin", new Set(["session-local"]));
+  assert.deepEqual(descriptors.map((descriptor) => descriptor.key), ["session:session-local|profile:codex"]);
+  assert.deepEqual(windowDescriptors(document, "builtin", new Set()), []);
+});
+
+test("uses the project profile for one enabled session when no explicit binding exists", () => {
+  const descriptors = windowDescriptors({
+    schema: "codex-ai-presence/profiles/v0.1",
+    project_profile_id: "codex",
+    profiles: { codex: { avatar_id: "higan-live2d" } },
+    sessions: {},
+  }, "builtin", new Set(["session-local"]));
+  assert.deepEqual(descriptors, [{
+    key: "session:session-local|profile:codex",
+    sessionId: "session-local",
+    profileId: "codex",
+    avatarId: "higan-live2d",
+  }]);
+});
+
 test("routes session activity and unscoped speech audio independently", () => {
   const descriptors = [
     { key: "session:a|profile:sol", sessionId: "a", profileId: "sol", avatarId: "builtin" },

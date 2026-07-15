@@ -1,0 +1,1 @@
+throw 'The Live2D runtime is bundled into the unified codex-voice skill. Run skills/codex-voice/scripts/setup.py from the project or re-project the skill; do not install a separate global Live2D runtime.'

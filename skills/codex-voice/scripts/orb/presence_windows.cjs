@@ -7,7 +7,7 @@ function validId(value, fallback) {
   return typeof value === "string" && ID_PATTERN.test(value) ? value : fallback;
 }
 
-function windowDescriptors(document, selectedAvatarId = "builtin") {
+function windowDescriptors(document, selectedAvatarId = "builtin", eligibleSessionIds = null) {
   const fallbackAvatarId = validId(selectedAvatarId, "builtin");
   if (!document || typeof document !== "object" || document.schema !== PROFILE_SCHEMA) {
     return [{
@@ -31,9 +31,11 @@ function windowDescriptors(document, selectedAvatarId = "builtin") {
     ? profiles[projectProfileId]
     : {};
   const sessions = document.sessions && typeof document.sessions === "object" ? document.sessions : {};
+  const configuredSessionIds = Object.keys(sessions).filter((sessionId) => sessionId.trim()).sort();
+  const eligible = eligibleSessionIds instanceof Set ? eligibleSessionIds : null;
   const descriptors = [];
-  for (const sessionId of Object.keys(sessions).sort()) {
-    if (!sessionId.trim()) continue;
+  for (const sessionId of configuredSessionIds) {
+    if (eligible && !eligible.has(sessionId)) continue;
     const binding = sessions[sessionId];
     const candidateProfileId = typeof binding === "string" ? binding : binding?.profile_id;
     const profileId = validId(candidateProfileId, projectProfileId);
@@ -49,6 +51,20 @@ function windowDescriptors(document, selectedAvatarId = "builtin") {
     });
   }
   if (descriptors.length) return descriptors;
+  // Once a project has explicit session bindings, an enabled-session filter
+  // that rejects every binding must produce no window. Falling back to the
+  // project profile here would resurrect stale or cross-project renderers.
+  if (eligible && configuredSessionIds.length) return [];
+  if (eligible && eligible.size === 1) {
+    const [sessionId] = eligible;
+    return [{
+      key: `session:${sessionId}|profile:${projectProfileId}`,
+      sessionId,
+      profileId: projectProfileId,
+      avatarId: validId(projectProfile.avatar_id, fallbackAvatarId),
+    }];
+  }
+  if (eligible && eligible.size !== 1) return [];
   return [{
     key: `session:unscoped|profile:${projectProfileId}`,
     sessionId: null,

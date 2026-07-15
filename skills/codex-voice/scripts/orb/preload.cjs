@@ -95,7 +95,25 @@ function framePolicyFromArguments(args = []) {
   }
 }
 
+function platformFromArguments(args = []) {
+  const prefix = "--codex-platform=";
+  const encoded = args.find((value) => typeof value === "string" && value.startsWith(prefix));
+  return encoded ? encoded.slice(prefix.length).toLowerCase() : "unknown";
+}
+
 const framePolicy = framePolicyFromArguments(process.argv);
+const runtimePlatform = platformFromArguments(process.argv);
+const linuxWindowControls = runtimePlatform === "linux";
+
+function markPlatformDocument() {
+  const root = document.documentElement;
+  if (root) root.dataset.codexPlatform = runtimePlatform;
+}
+
+markPlatformDocument();
+if (!document.documentElement) {
+  document.addEventListener("DOMContentLoaded", markPlatformDocument, { once: true });
+}
 let frameMode = "idle";
 let frameIdleTimer = null;
 if (framePolicy?.enabled !== false) {
@@ -130,7 +148,7 @@ function applyFrameMode(nextMode, delayMilliseconds = 0) {
   else apply();
 }
 
-const RESIZE_HANDLE_PX = 48;
+const RESIZE_HANDLE_PX = 72;
 let resizing = false;
 let resizePointerId = null;
 let requestedResizeMode = false;
@@ -142,6 +160,55 @@ let voiceStream = null;
 let voiceRecordingId = null;
 let voiceChunks = [];
 let moveModeRequested = false;
+let hostMoveMode = false;
+let resizeMode = false;
+let resizePreview = false;
+let resizeHandleHovered = false;
+let lastPointerActivityAt = 0;
+
+function enabledFromPayload(payload) {
+  return typeof payload === "object" && payload !== null
+    ? Boolean(payload.enabled)
+    : Boolean(payload);
+}
+
+function updateResizeVisualState() {
+  const active = resizeMode || resizePreview;
+  document.body?.classList.toggle("resize-mode", active);
+  const root = document.documentElement;
+  if (root) root.style.cursor = resizeHandleHovered || resizing ? "nwse-resize" : "";
+}
+
+function reportPointerActivity(event) {
+  const screenX = Number(event?.screenX);
+  const screenY = Number(event?.screenY);
+  const now = performance.now();
+  if (!Number.isFinite(screenX) || !Number.isFinite(screenY) || now - lastPointerActivityAt < 80) return;
+  lastPointerActivityAt = now;
+  ipcRenderer.send("orb-pointer-activity", {
+    screenX,
+    screenY,
+    clientX: Number(event.clientX),
+    clientY: Number(event.clientY),
+  });
+}
+
+// Keep the shared gesture layer informed even when a custom renderer does not
+// subscribe to the public move-mode callback itself.
+ipcRenderer.on("move-mode", (_event, payload) => {
+  hostMoveMode = enabledFromPayload(payload);
+  moveModeRequested = hostMoveMode;
+});
+ipcRenderer.on("resize-mode", (_event, enabled) => {
+  resizeMode = Boolean(enabled);
+  if (!resizeMode && !resizing) resizePreview = false;
+  updateResizeVisualState();
+});
+
+// Pointer activity supports non-Wayland targeting without changing the normal
+// click-through behavior. Wayland ignores this signal and uses compositor
+// focus from the desktop overview as its explicit renderer selection.
+window.addEventListener("mousemove", reportPointerActivity, true);
 
 function requestMoveMode(enabled) {
   const next = Boolean(enabled);
@@ -307,6 +374,8 @@ function finishResize(event) {
   }
   resizing = false;
   resizePointerId = null;
+  resizePreview = false;
+  updateResizeVisualState();
   ipcRenderer.send("orb-resize-end");
   if (event?.target?.releasePointerCapture && event.pointerId !== undefined) {
     try {
@@ -320,39 +389,46 @@ function finishResize(event) {
 // The Orb is click-through by default. This small, host-owned gesture gives
 // every renderer—including custom avatars—a consistent resize affordance.
 window.addEventListener("mousemove", (event) => {
-  const wantsResize = modifierHeld(event) && event.shiftKey && inResizeHandle(event);
-  if (wantsResize && !requestedResizeMode && !resizing) {
+  resizeHandleHovered = inResizeHandle(event);
+  const modifierResize = linuxWindowControls && modifierHeld(event) && event.shiftKey;
+  const fallbackResize = linuxWindowControls
+    ? modifierResize && resizeHandleHovered
+    : resizeHandleHovered;
+  const wantsResize = resizeMode || fallbackResize;
+  resizePreview = wantsResize;
+  updateResizeVisualState();
+  if (fallbackResize && !requestedResizeMode && !resizing) {
     requestedResizeMode = true;
     requestMoveMode(true);
-  } else if (!wantsResize && requestedResizeMode && !resizing) {
+  } else if (!fallbackResize && !resizeMode && requestedResizeMode && !resizing) {
     requestedResizeMode = false;
     requestMoveMode(false);
   }
-  document.documentElement.style.cursor = wantsResize ? "nwse-resize" : "";
 }, true);
 
 // Mouse movement is forwarded while the transparent window is click-through.
 // Arm the host before pointerdown so both drag and right-button capture can
 // arrive at the shared preload instead of being swallowed by the desktop.
 window.addEventListener("mousemove", (event) => {
-  if (resizing || gesture || event.shiftKey) return;
+  if (resizing || gesture || resizeMode || event.shiftKey) return;
   requestMoveMode(modifierHeld(event));
 }, true);
 
 window.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || !event.shiftKey || !modifierHeld(event) || !inResizeHandle(event)) {
+  const linuxResizeGesture = linuxWindowControls && event.shiftKey && modifierHeld(event);
+  const resizeArmed = resizeMode || linuxResizeGesture || (!linuxWindowControls && resizeHandleHovered);
+  if (event.button !== 0 || !resizeArmed || !inResizeHandle(event)) {
     return;
   }
   resizing = true;
   resizePointerId = event.pointerId;
+  resizeHandleHovered = true;
+  resizePreview = true;
+  updateResizeVisualState();
   requestedResizeMode = false;
   ipcRenderer.send("orb-resize-start", resizePayload(event));
   if (event.target?.setPointerCapture) {
-    try {
-      event.target.setPointerCapture(event.pointerId);
-    } catch (_) {
-      // Pointer capture is best-effort for transparent windows.
-    }
+    try { document.documentElement.setPointerCapture(event.pointerId); } catch (_) {}
   }
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -383,7 +459,13 @@ window.addEventListener("mousemove", (event) => {
 }, true);
 
 window.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || !voiceModifierHeld(event) || event.shiftKey || inResizeHandle(event)) {
+  if (
+    event.button !== 0
+    || event.shiftKey
+    || resizeMode
+    || inResizeHandle(event)
+    || (!voiceModifierHeld(event) && !hostMoveMode)
+  ) {
     return;
   }
   clearGestureTimer();
@@ -392,14 +474,17 @@ window.addEventListener("pointerdown", (event) => {
     button: 0,
     clientX: event.clientX,
     clientY: event.clientY,
-    mode: "pending",
+    mode: hostMoveMode ? "drag" : "pending",
     releaseRequested: false,
     discard: false,
     timer: null,
   };
   requestMoveMode(true);
+  if (gesture.mode === "drag") {
+    ipcRenderer.send("orb-drag-start", gesturePayload(event));
+  }
   if (event.target?.setPointerCapture) {
-    try { event.target.setPointerCapture(event.pointerId); } catch (_) {}
+    try { document.documentElement.setPointerCapture(event.pointerId); } catch (_) {}
   }
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -513,12 +598,26 @@ contextBridge.exposeInMainWorld("orbApi", {
     return () => ipcRenderer.removeListener("avatar-state", listener);
   },
   onMoveMode(callback) {
-    const listener = (_event, enabled) => {
+    const listener = (_event, payload) => {
+      const enabled = enabledFromPayload(payload);
+      hostMoveMode = enabled;
+      moveModeRequested = enabled;
       applyFrameMode(enabled ? "active" : "idle", enabled ? 0 : 300);
-      callback(Boolean(enabled));
+      callback(enabled);
     };
     ipcRenderer.on("move-mode", listener);
     return () => ipcRenderer.removeListener("move-mode", listener);
+  },
+  onResizeMode(callback) {
+    const listener = (_event, enabled) => {
+      const active = Boolean(enabled);
+      resizeMode = active;
+      if (!active && !resizing) resizePreview = false;
+      updateResizeVisualState();
+      callback(active);
+    };
+    ipcRenderer.on("resize-mode", listener);
+    return () => ipcRenderer.removeListener("resize-mode", listener);
   },
   onWindowResize(callback) {
     const listener = (_event, payload) => callback(payload);

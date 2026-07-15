@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from configuration import load_settings
+from session_scope import is_project_mode, load_state, registered_session_ids
 
 
 SCHEMA = "codex-ai-presence/profiles/v0.1"
@@ -160,6 +161,26 @@ def write_document(voice_root: Path, value: dict[str, object]) -> dict[str, obje
     return normalized
 
 
+def require_project_session(project_root: Path, voice_root: Path, session_id: str) -> None:
+    """Reject accidental bindings into a different project runtime."""
+    state = load_state(voice_root)
+    if is_project_mode(state):
+        return
+    if session_id not in registered_session_ids(state):
+        raise ProfileError(
+            f"session {session_id} is not enabled in {project_root}; run session-on "
+            "from that Codex session before binding its profile"
+        )
+    sessions = state.get("sessions")
+    details = sessions.get(session_id) if isinstance(sessions, dict) else None
+    registered_project = details.get("project_root") if isinstance(details, dict) else None
+    if isinstance(registered_project, str) and Path(registered_project).expanduser().resolve() != project_root:
+        raise ProfileError(
+            f"session {session_id} belongs to {Path(registered_project).expanduser().resolve()}, "
+            f"not {project_root}"
+        )
+
+
 class ProfileRegistry:
     """Resolve immutable routing data; playback remains owned by the arbiter."""
 
@@ -241,11 +262,15 @@ def command_bind(args: argparse.Namespace) -> int:
     assert isinstance(profiles, dict)
     if profile_id not in profiles:
         raise ProfileError(f"profile does not exist: {profile_id}")
+    session_id = str(args.session_id).strip()
+    if not session_id:
+        raise ProfileError("session id must be non-empty")
+    require_project_session(args.project_root, args.voice_root, session_id)
     sessions = document["sessions"]
     assert isinstance(sessions, dict)
-    sessions[args.session_id] = {"profile_id": profile_id}
+    sessions[session_id] = {"profile_id": profile_id}
     write_document(args.voice_root, document)
-    print(f"Bound session {args.session_id} to profile {profile_id}; restart the Orb to add its window.")
+    print(f"Bound session {session_id} to profile {profile_id}; restart the Orb to add its window.")
     return 0
 
 

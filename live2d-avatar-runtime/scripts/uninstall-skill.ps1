@@ -1,0 +1,1 @@
+throw 'There is no separate live2d-avatar-controls skill to uninstall. Use skills/codex-voice/scripts/uninstall.py for the unified skill; it preserves Live2D model and project data owned by the Live2D runtime.'

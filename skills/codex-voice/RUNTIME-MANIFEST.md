@@ -1,6 +1,6 @@
 ---
 manifest_schema: 1
-manifest_revision: 2026-07-14-fedora-voice-seam
+manifest_revision: 2026-07-15-project-route-binding-refresh
 release_unit: codex-voice
 ---
 
@@ -9,7 +9,8 @@ release_unit: codex-voice
 This manifest is shipped with every projected `codex-voice` skill revision
 and is copied into the project-local `.codex-voice` runtime during setup. It
 is the inventory for files owned by the integration, including the managed
-Codex hook boundary.
+Codex hook boundary and the bundled Live2D runtime seam. The Live2D package is
+part of the installable skill payload; it is not a second installed skill.
 
 Update this file in the same PR or push whenever a new runtime artifact,
 generated directory, managed hook, or cleanup rule is added. The uninstaller
@@ -25,7 +26,12 @@ predate a later file.
 | Runtime root | `.codex-voice/` | Uninstaller removes the complete directory |
 | Runtime manifest | `.codex-voice/RUNTIME-MANIFEST.md` | Runtime-root cleanup |
 | Activity bridge | `.codex-voice/activity.py` | Runtime-root cleanup |
+| Global playback arbiter client | `skills/codex-voice/scripts/global_arbiter.py` | Skill projection/reinstall; the user-level daemon remains shared across project runtimes |
+| Isolated Orb endpoint | Derived from the canonical `.codex-voice` path; `CODEX_ORB_PORT` may override it | No additional artifact |
 | Codex TUI/server bridge | `.codex-voice/tui_bridge.py` | Runtime-root cleanup |
+| Stock TUI launcher | `.codex-voice/launch_codex.py` | Runtime-root cleanup |
+| Stock TUI launcher wrapper | `.codex-voice/launch_codex.sh` | Runtime-root cleanup |
+| TUI Kokoro worker | `.codex-voice/tui_kokoro_worker.py` | Runtime-root cleanup |
 | Avatar manager | `.codex-voice/avatar.py` | Runtime-root cleanup |
 | Avatar state writer | `.codex-voice/avatar_state.py` | Runtime-root cleanup |
 | Avatar selection | `.codex-voice/avatar-selection.json` | Runtime-root cleanup |
@@ -36,8 +42,9 @@ predate a later file.
 | Avatar state diagnostics | `.codex-voice/avatar-state-status.json` | Runtime-root cleanup |
 | Routed avatar state diagnostics | `.codex-voice/avatar-state-statuses.json` | Runtime-root cleanup |
 | Routed avatar diagnostics temporary write | `.codex-voice/avatar-state-statuses.json.tmp` | Runtime-root cleanup |
-| Presence profile manager and settings helper | `.codex-voice/{profiles.py,configuration.py}` | Runtime-root cleanup |
+| Presence profile, session, and settings helpers | `.codex-voice/{profiles.py,session_scope.py,configuration.py}` | Runtime-root cleanup |
 | Presence profiles and session bindings | `.codex-voice/presence-profiles.json` | Runtime-root cleanup |
+| Managed runtime refresh | `setup.py --project-root <project> --refresh --force` | Replaces only skill-owned runtime code and removes obsolete managed root files while preserving provider, models, environments, profiles, sessions, and user state |
 | Voice lifecycle wrappers | `.codex-voice/{start_voice.ps1,start_voice.sh}` | Runtime-root cleanup |
 | Configuration markers | `.codex-voice/{voice,mode,speed,volume,commentary-volume,provider,progress,enabled,orb.enabled}` | Runtime-root cleanup |
 | Voice-input settings | `.codex-voice/input.json` | Runtime-root cleanup |
@@ -57,6 +64,10 @@ predate a later file.
 | Managed hook | `.codex/hooks/speak.py` | Hook cleanup with ownership check |
 | Hook backup | `.codex/hooks/speak.py.codex-voice-backup.py` | Hook cleanup / restore |
 | Hook registration | `.codex/hooks.json` managed `Stop` entry only | JSON-aware hook cleanup |
+| Bundled Live2D runtime | `skills/codex-voice/live2d-avatar-runtime/` | Skill projection/reinstall; not project-runtime cleanup |
+| Unified Live2D launcher | `skills/codex-voice/scripts/live2d-avatar.{py,sh,ps1}` | Skill projection/reinstall; not project-runtime cleanup |
+| Live2D model registry | `~/.codex/live2d-models/<model-id>/` | Live2D `model remove`; preserved by voice uninstall |
+| Live2D project boundary | `<project>/.codex-live2d/` | Live2D `project uninstall`; preserved by voice uninstall |
 | User avatar source | `.codex-voice-avatars/<avatar-id>/` | User-owned; not removed by skill uninstall |
 
 ## Revision ledger
@@ -82,3 +93,10 @@ predate a later file.
 | `2026-07-13-routed-avatar-windows` | Adds independently persisted session/profile avatar state, acceptance diagnostics, and window geometry; enables drag/resize on every rendered profile; raises the default idle and active animation budgets to 60 FPS after the shared Cubism renderer optimization; and moves ordered voice-control subprocesses and recording writes off Electron's main loop while removing the synchronous frame-policy IPC handshake | Adds routed `avatar-states.json` and `avatar-state-statuses.json` ledgers inside `.codex-voice`; the async control helper remains inside the existing Orb package, and per-window geometry remains in the existing `orb-position.json` artifact and cleanup boundary |
 | `2026-07-14-fedora-voice-seam` | Adds platform-aware virtualenv paths, a POSIX watcher launcher, a POSIX voice lifecycle wrapper, and the Linux OpenVINO provider environment | The POSIX wrapper and OpenVINO environment are inside `.codex-voice`; no new cleanup boundary |
 | `2026-07-14-tui-bridge-seam` | Adds a transparent Codex TUI/server JSONL proxy and an injectable mock Kokoro worker contract; only visible assistant deltas cross the voice seam | The bridge remains inside `.codex-voice`; no new external cleanup boundary |
+| `2026-07-15-fedora-tui-launch` | Adds the stock Fedora/Linux TUI launcher and project-root forwarding contract; visible output is handed to the global singleton arbiter rather than creating a per-session Kokoro worker | Launcher remains inside `.codex-voice`; the global entrypoint shim is user-managed and is not removed by project voice uninstall |
+| `2026-07-15-linux-window-controls-focus` | Makes Linux move/resize mode transitions edge-triggered, focuses and raises the transparent window while editing, restores click-through on exit, exposes an active mode border, and reports systemd-backed Orb status correctly | Uses the existing Orb renderer, geometry, shortcut, and status artifacts; no new cleanup boundary |
+| `2026-07-15-linux-window-controls-all-renderers` | Broadcasts move/resize shortcut state to every ready renderer and reapplies it when a renderer finishes loading | Uses the existing Orb renderer and geometry artifacts; no new cleanup boundary |
+| `2026-07-15-unified-live2d-skill` | Bundles the Live2D runtime package and launcher into the single `codex-voice` skill and merges its lifecycle/state reference | Skill reinstall owns the bundled source; Live2D model/project data remains under its own ownership-checked commands |
+| `2026-07-15-isolated-orb-endpoints` | Derives the activity/audio UDP endpoint per project voice root for renderer delivery; the endpoint no longer selects a worker | No additional artifact or cleanup boundary |
+| `2026-07-15-global-playback-arbiter` | Moves playback ownership, cross-project attention arbitration, session-transition announcements, and the persistent Kokoro worker into one user-level arbiter; project watchers become clients and pass the target Orb route per request | The daemon socket/log live in the user-level Codex voice state area and are intentionally shared; uninstalling one project must not stop it for other sessions |
+| `2026-07-15-project-route-binding-refresh` | Intersects renderer and Live2D routes with each project's enabled session registry, rejects foreign profile bindings, adds a state-preserving managed runtime refresh, and adds one-command watcher/Orb restart | Refresh removes only obsolete skill-owned runtime copies (`main.cjs`, `preload.cjs`, `styles.css`, and `watcher.py` at the runtime root); profiles, routes, providers, model assets, environments, and user avatar data remain preserved |

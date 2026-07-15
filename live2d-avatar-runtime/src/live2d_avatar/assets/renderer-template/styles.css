@@ -1,0 +1,112 @@
+:root {
+  --accent: #70e8ff;
+  --energy: 0.14;
+  --halo-display: block;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  color: #eafcff;
+  font-family: system-ui, sans-serif;
+  user-select: none;
+}
+
+#avatar {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  touch-action: none;
+}
+
+#avatar-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+}
+
+.halo {
+  position: absolute;
+  display: var(--halo-display);
+  border-radius: 50%;
+  pointer-events: none;
+  transition: opacity 160ms ease, box-shadow 160ms ease;
+}
+
+.halo-outer {
+  inset: 13%;
+  z-index: 0;
+  opacity: calc(0.13 + var(--energy) * 0.13);
+  box-shadow: 0 0 calc(42px + var(--energy) * 70px) var(--accent);
+}
+
+.halo-inner {
+  inset: 27%;
+  z-index: 1;
+  opacity: calc(0.08 + var(--energy) * 0.1);
+  box-shadow: inset 0 0 calc(26px + var(--energy) * 36px) var(--accent);
+}
+
+body.move-mode #avatar {
+  cursor: grab;
+}
+
+body.dragging #avatar {
+  cursor: grabbing;
+}
+
+/* Fedora/Wayland affordance: the host owns the gesture, while the animation
+ * runtime owns the visual indication on custom avatar pages. */
+html[data-codex-platform="linux"] body::after {
+  content: "";
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  width: 18px;
+  height: 18px;
+  border-right: 2px solid rgba(220, 250, 255, 0.72);
+  border-bottom: 2px solid rgba(220, 250, 255, 0.72);
+  opacity: 0.52;
+  pointer-events: none;
+  z-index: 20;
+}
+
+html[data-codex-platform="linux"] body.resize-mode::before {
+  content: "RESIZE MODE";
+  position: fixed;
+  inset: 5px;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border: 2px dashed rgba(220, 250, 255, 0.88);
+  border-radius: 8px;
+  color: rgba(220, 250, 255, 0.92);
+  font: 11px/1 "Segoe UI", sans-serif;
+  letter-spacing: 0.14em;
+  opacity: 0.92;
+  pointer-events: none;
+  z-index: 30;
+}
+
+html[data-codex-platform="linux"] body.resize-mode::after {
+  width: 52px;
+  height: 52px;
+  right: 6px;
+  bottom: 6px;
+  border-right-width: 5px;
+  border-bottom-width: 5px;
+  opacity: 1;
+}
+
+html[data-codex-platform="linux"] body.resize-mode #avatar {
+  cursor: nwse-resize;
+}

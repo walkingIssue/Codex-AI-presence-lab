@@ -69,8 +69,16 @@ ORB_FILES = (
     "styles.css",
     "package.json",
     "package-lock.json",
+    "start_orb.sh",
     "start_orb.ps1",
+    "stop_orb.sh",
     "stop_orb.ps1",
+)
+LEGACY_RUNTIME_FILES = (
+    "main.cjs",
+    "preload.cjs",
+    "styles.css",
+    "watcher.py",
 )
 MIN_PYTHON = (3, 11)
 MAX_PYTHON = (3, 13)
@@ -309,8 +317,17 @@ def install_orb(voice_root: Path, skip: bool) -> None:
     source = SCRIPT_ROOT / "orb"
     destination = voice_root / "orb"
     destination.mkdir(parents=True, exist_ok=True)
+    dependency_files = ("package.json", "package-lock.json")
+    dependencies_changed = any(
+        not (destination / name).is_file()
+        or (destination / name).read_bytes() != (source / name).read_bytes()
+        for name in dependency_files
+    )
     for name in ORB_FILES:
         shutil.copy2(source / name, destination / name)
+    if not dependencies_changed and electron_binary(destination).is_file():
+        print("Reused existing Orb dependencies; package manifests are unchanged.")
+        return
     npm = shutil.which("npm")
     if npm is None:
         print("npm was not found; voice works, but run npm ci in .codex-voice/orb to enable the orb.")
@@ -323,6 +340,11 @@ def install_orb(voice_root: Path, skip: bool) -> None:
             "Electron's platform binary is unavailable; voice setup is still usable, "
             "but the orb needs a successful npm install and Electron download."
         )
+
+
+def install_posix_script(source: Path, destination: Path) -> None:
+    shutil.copy2(source, destination)
+    destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def install_start_script(voice_root: Path) -> None:
@@ -347,6 +369,14 @@ def install_tui_bridge(voice_root: Path) -> None:
     shutil.copy2(SCRIPT_ROOT / "tui_bridge.py", voice_root / "tui_bridge.py")
 
 
+def install_tui_runtime(voice_root: Path) -> None:
+    """Expose the real Kokoro worker and stock-TUI launcher."""
+    shutil.copy2(SCRIPT_ROOT / "tui_kokoro_worker.py", voice_root / "tui_kokoro_worker.py")
+    shutil.copy2(SCRIPT_ROOT / "launch_codex.py", voice_root / "launch_codex.py")
+    if os.name != "nt":
+        install_posix_script(SCRIPT_ROOT / "launch_codex.sh", voice_root / "launch_codex.sh")
+
+
 def install_avatar_script(voice_root: Path) -> None:
     """Expose avatar bundle management from the project runtime."""
     shutil.copy2(SCRIPT_ROOT / "avatar.py", voice_root / "avatar.py")
@@ -359,7 +389,7 @@ def install_avatar_state_script(voice_root: Path) -> None:
 
 def install_profile_script(voice_root: Path) -> None:
     """Expose session/profile identity routing from the project runtime."""
-    for name in ("configuration.py", "profiles.py"):
+    for name in ("configuration.py", "profiles.py", "session_scope.py"):
         shutil.copy2(SCRIPT_ROOT / name, voice_root / name)
 
 
@@ -379,6 +409,36 @@ def setup_input(voice_root: Path, base_python: list[str]) -> None:
 def install_runtime_manifest(voice_root: Path) -> None:
     """Copy the tracked ownership inventory into the project runtime."""
     shutil.copy2(SKILL_ROOT / RUNTIME_MANIFEST_NAME, voice_root / RUNTIME_MANIFEST_NAME)
+
+
+def remove_legacy_runtime_files(voice_root: Path) -> None:
+    """Remove only obsolete files from prior managed runtime layouts."""
+    for name in LEGACY_RUNTIME_FILES:
+        path = voice_root / name
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+            print(f"Removed obsolete managed runtime file: {path}")
+
+
+def install_managed_runtime_files(
+    project_root: Path,
+    voice_root: Path,
+    *,
+    force: bool,
+    skip_orb: bool,
+) -> None:
+    install_hook(project_root, voice_root, force)
+    install_orb(voice_root, skip_orb)
+    install_start_script(voice_root)
+    install_activity_script(voice_root)
+    install_tui_bridge(voice_root)
+    install_tui_runtime(voice_root)
+    install_avatar_script(voice_root)
+    install_avatar_state_script(voice_root)
+    install_profile_script(voice_root)
+    install_voice_input_scripts(voice_root)
+    install_runtime_manifest(voice_root)
+    remove_legacy_runtime_files(voice_root)
 
 
 def provider_check(python: Path, label: str) -> None:
@@ -463,6 +523,11 @@ def main() -> int:
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
     parser.add_argument("--enable", action="store_true", help="enable voice after setup")
     parser.add_argument("--force", action="store_true", help="back up and replace a different existing speak.py")
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="replace managed code in an existing runtime without changing models, environments, provider, or state",
+    )
     parser.add_argument("--no-orb", action="store_true", help="skip copying/installing the Strand Orb")
     parser.add_argument(
         "--with-input",
@@ -487,9 +552,32 @@ def main() -> int:
             "no Linux-compatible provider path"
         )
 
-    project_root = args.project_root.resolve()
-    base_python = select_base_python(args.python)
+    project_root = args.project_root.expanduser().resolve()
     voice_root = project_root / ".codex-voice"
+    if args.refresh:
+        if args.python is not None or args.with_input or args.cuda or args.directml or args.openvino:
+            parser.error("--refresh cannot change Python, input, or provider environments")
+        if not voice_root.is_dir():
+            parser.error(f"--refresh requires an existing runtime: {voice_root}")
+        ensure_gitignore(voice_root / ".gitignore")
+        ensure_state_file(voice_root)
+        if args.enable:
+            (voice_root / "enabled").write_text("on\n", encoding="utf-8")
+        install_managed_runtime_files(
+            project_root,
+            voice_root,
+            force=args.force,
+            skip_orb=args.no_orb,
+        )
+        try:
+            provider = (voice_root / "provider").read_text(encoding="utf-8").strip() or "cpu"
+        except OSError:
+            provider = "cpu"
+        print(f"Codex AI Presence runtime refreshed in {project_root}")
+        print(f"Provider preserved: {provider}")
+        return 0
+
+    base_python = select_base_python(args.python)
     voice_root.mkdir(parents=True, exist_ok=True)
     ensure_gitignore(voice_root / ".gitignore")
     ensure_state_file(voice_root)
@@ -546,16 +634,12 @@ def main() -> int:
     (voice_root / "provider").write_text(provider + "\n", encoding="utf-8")
     if args.enable:
         (voice_root / "enabled").write_text("on\n", encoding="utf-8")
-    install_hook(project_root, voice_root, args.force)
-    install_orb(voice_root, args.no_orb)
-    install_start_script(voice_root)
-    install_activity_script(voice_root)
-    install_tui_bridge(voice_root)
-    install_avatar_script(voice_root)
-    install_avatar_state_script(voice_root)
-    install_profile_script(voice_root)
-    install_voice_input_scripts(voice_root)
-    install_runtime_manifest(voice_root)
+    install_managed_runtime_files(
+        project_root,
+        voice_root,
+        force=args.force,
+        skip_orb=args.no_orb,
+    )
 
     print(f"Codex AI Presence setup complete in {project_root}")
     print(f"Base Python: {' '.join(base_python)}")

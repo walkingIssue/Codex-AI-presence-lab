@@ -1,0 +1,1 @@
+throw 'The Live2D controls are merged into the unified codex-voice skill. Project or install codex-voice so its bundled live2d-avatar-runtime and launcher are available; do not install a separate live2d-avatar-controls skill.'
