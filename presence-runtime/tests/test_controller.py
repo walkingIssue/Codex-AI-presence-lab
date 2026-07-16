@@ -7,6 +7,7 @@ import pytest
 from presence_runtime.catalog import Catalog
 from presence_runtime.controller import RecordingRenderer, RuntimeController
 from presence_runtime.errors import ConflictError
+from presence_runtime.errors import CatalogReferenceError
 from presence_runtime.store import PresenceStore
 from presence_runtime.worker import RecordingWorker
 
@@ -204,3 +205,98 @@ def test_activity_overlay_is_recomputed_without_changing_configuration_revision(
     assert "pose.sweater-default" not in overlay.semantic.effective_actions
     assert idle.semantic.effective_actions == persistent.semantic.persistent_actions
     assert len(renderer.activities) == 2
+
+
+def test_dynamic_avatar_swap_is_session_local_and_restart_rehydrates_geometry(
+    tmp_path,
+    higan_pack,
+) -> None:
+    controller, _profile, _voice, _renderer = runtime(tmp_path, higan_pack)
+    first = register(controller, tmp_path / "project")
+    second = register(controller, tmp_path / "project")
+    controller.ensure_effective(first["binding_id"])
+    controller.ensure_effective(second["binding_id"])
+    controller.set_project_default(
+        first["project_instance_id"],
+        {"profile_ref": "higan-default"},
+    )
+    controller.store.set_geometry(
+        second["binding_id"],
+        {"x": 120, "y": 80, "width": 520, "height": 780},
+    )
+    swapped = controller.use_avatar(
+        "builtin",
+        binding_id=second["binding_id"],
+        clear_preset=True,
+    )[0]
+
+    assert swapped.avatar_ref == "builtin@1"
+    assert controller.store.effective_snapshot(first["binding_id"]).avatar_ref == "higan@3"
+    assert controller.store.effective_snapshot(second["binding_id"]).avatar_ref == "builtin@1"
+
+    restarted_voice = RecordingWorker()
+    restarted_renderer = RecordingRenderer()
+    restarted = RuntimeController(
+        store=controller.store,
+        catalog=controller.catalog,
+        voice=restarted_voice,
+        renderer=restarted_renderer,
+    )
+    result = restarted.rehydrate()
+    assert set(result["restored"]) >= {first["binding_id"], second["binding_id"]}
+    assert restarted_renderer.snapshots[first["binding_id"]].avatar_ref == "higan@3"
+    assert restarted_renderer.snapshots[second["binding_id"]].avatar_ref == "builtin@1"
+    assert controller.store.geometry(second["binding_id"])["x"] == 120
+
+
+def test_revisioned_shared_profile_reconciles_floating_references_only(
+    tmp_path,
+    higan_pack,
+) -> None:
+    controller, profile, _voice, _renderer = runtime(tmp_path, higan_pack)
+    first = register(controller, tmp_path / "first")
+    second = register(controller, tmp_path / "second")
+    controller.ensure_effective(first["binding_id"])
+    controller.ensure_effective(second["binding_id"])
+    controller.set_project_default(
+        first["project_instance_id"],
+        {"profile_ref": "higan-default"},
+    )
+    controller.set_project_default(
+        second["project_instance_id"],
+        {"profile_ref": f"higan-default@{profile['revision']}"},
+    )
+
+    saved, reconciled = controller.revise_profile(
+        {
+            "profile_id": "higan-default",
+            "voice_id": "bf_isabella",
+            "speed": 1.25,
+            "volume": 55,
+            "avatar_ref": "higan",
+            "preset_ref": "plain@1",
+        },
+        expected_revision=profile["revision"],
+    )
+    assert saved["revision"] == profile["revision"] + 1
+    assert {item.binding_id for item in reconciled} == {first["binding_id"]}
+    assert controller.store.effective_snapshot(first["binding_id"]).tts.voice_id == "bf_isabella"
+    assert controller.store.effective_snapshot(second["binding_id"]).tts.voice_id == "af_heart"
+
+
+def test_catalog_removal_is_reference_protected_and_force_cancels_binding(
+    tmp_path,
+    higan_pack,
+) -> None:
+    controller, _profile, _voice, _renderer = runtime(tmp_path, higan_pack)
+    source = register(controller, tmp_path / "project")
+    controller.ensure_effective(source["binding_id"])
+    controller.set_project_default(
+        source["project_instance_id"],
+        {"profile_ref": "higan-default"},
+    )
+    with pytest.raises(CatalogReferenceError):
+        controller.remove_catalog_entry("avatar", "higan")
+    controller.remove_catalog_entry("avatar", "higan", force=True)
+    assert controller.store.binding(source["binding_id"])["state"] == "deleted"
+    assert controller.catalog.list_avatars() == []

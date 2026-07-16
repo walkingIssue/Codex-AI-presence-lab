@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
 from typing import Any, Mapping, Protocol
 
@@ -263,6 +264,214 @@ class RuntimeController:
             status="committed",
         )
         return [snapshot.acknowledged() for snapshot in promoted]
+
+    @staticmethod
+    def _merge_patch(
+        current: Mapping[str, Any],
+        changes: Mapping[str, Any],
+        clear_fields: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        result = copy.deepcopy(dict(current))
+        for field in clear_fields:
+            result.pop(field, None)
+        for field, value in changes.items():
+            if isinstance(value, Mapping) and isinstance(result.get(field), Mapping):
+                result[field] = RuntimeController._merge_patch(
+                    result[field],
+                    value,
+                )
+            else:
+                # Lists replace, including explicit empty lists. Null remains
+                # an explicit clear only for fields allowed by validation.
+                result[field] = copy.deepcopy(value)
+        return result
+
+    def update_session(
+        self,
+        binding_id: str,
+        changes: Mapping[str, Any],
+        *,
+        clear_fields: tuple[str, ...] = (),
+    ) -> EffectiveSnapshot:
+        current = self.store.session_override(binding_id)
+        candidate = self._merge_patch(current, changes, clear_fields)
+        return self.set_session_override(binding_id, candidate)
+
+    def update_project(
+        self,
+        project_id: str,
+        changes: Mapping[str, Any],
+        *,
+        clear_fields: tuple[str, ...] = (),
+    ) -> list[EffectiveSnapshot]:
+        current = self.store.project_default(project_id)
+        candidate = self._merge_patch(current, changes, clear_fields)
+        return self.set_project_default(project_id, candidate)
+
+    def use_profile(
+        self,
+        reference: str,
+        *,
+        project_id: str | None = None,
+        binding_id: str | None = None,
+    ) -> list[EffectiveSnapshot]:
+        self.catalog.get_profile(reference)
+        if (project_id is None) == (binding_id is None):
+            raise ValidationError("choose exactly one project or session scope")
+        if project_id is not None:
+            return self.update_project(project_id, {"profile_ref": reference})
+        return [self.update_session(binding_id, {"profile_ref": reference})]
+
+    def clear_profile(
+        self,
+        *,
+        project_id: str | None = None,
+        binding_id: str | None = None,
+    ) -> list[EffectiveSnapshot]:
+        if (project_id is None) == (binding_id is None):
+            raise ValidationError("choose exactly one project or session scope")
+        if project_id is not None:
+            return self.update_project(project_id, {}, clear_fields=("profile_ref",))
+        return [self.update_session(binding_id, {}, clear_fields=("profile_ref",))]
+
+    def use_avatar(
+        self,
+        reference: str,
+        *,
+        project_id: str | None = None,
+        binding_id: str | None = None,
+        clear_preset: bool = False,
+    ) -> list[EffectiveSnapshot]:
+        if reference not in {"builtin", "builtin@1"}:
+            self.catalog.get_avatar(reference)
+        changes: dict[str, Any] = {"avatar_ref": reference}
+        if clear_preset:
+            changes["preset_ref"] = None
+        if (project_id is None) == (binding_id is None):
+            raise ValidationError("choose exactly one project or session scope")
+        if project_id is not None:
+            return self.update_project(project_id, changes)
+        return [self.update_session(binding_id, changes)]
+
+    def use_preset(
+        self,
+        reference: str | None,
+        *,
+        project_id: str | None = None,
+        binding_id: str | None = None,
+    ) -> list[EffectiveSnapshot]:
+        if reference is not None:
+            self.catalog.get_preset(reference)
+        if (project_id is None) == (binding_id is None):
+            raise ValidationError("choose exactly one project or session scope")
+        if project_id is not None:
+            return self.update_project(project_id, {"preset_ref": reference})
+        return [self.update_session(binding_id, {"preset_ref": reference})]
+
+    def revise_profile(
+        self,
+        document: Mapping[str, Any],
+        *,
+        expected_revision: int | None = None,
+    ) -> tuple[dict[str, Any], list[EffectiveSnapshot]]:
+        saved = self.catalog.put_profile(
+            document,
+            expected_revision=expected_revision,
+        )
+        return saved, self.reconcile_catalog()
+
+    def revise_preset(
+        self,
+        document: Mapping[str, Any],
+        *,
+        expected_revision: int | None = None,
+    ) -> tuple[dict[str, Any], list[EffectiveSnapshot]]:
+        saved = self.catalog.put_preset(
+            document,
+            expected_revision=expected_revision,
+        )
+        return saved, self.reconcile_catalog()
+
+    def reconcile_catalog(self) -> list[EffectiveSnapshot]:
+        candidates: list[EffectiveSnapshot] = []
+        previous: dict[str, EffectiveSnapshot | None] = {}
+        for binding in self.store.list_bindings():
+            binding_id = binding["binding_id"]
+            current = self.store.effective_snapshot(binding_id)
+            candidate = self.resolve_binding(binding_id)
+            if current is not None and self._configuration_equal(current, candidate):
+                continue
+            candidates.append(candidate)
+            previous[binding_id] = current
+        if not candidates:
+            return []
+        try:
+            for candidate in candidates:
+                self._stage_and_ack(candidate)
+            promoted = self.store.promote_candidates(
+                {
+                    candidate.binding_id: candidate.revision
+                    for candidate in candidates
+                }
+            )
+        except BaseException as exc:
+            self._fail_and_restore(
+                [
+                    (candidate, previous[candidate.binding_id])
+                    for candidate in candidates
+                ],
+                str(exc),
+            )
+            raise
+        return [snapshot.acknowledged() for snapshot in promoted]
+
+    @staticmethod
+    def _configuration_equal(
+        current: EffectiveSnapshot,
+        candidate: EffectiveSnapshot,
+    ) -> bool:
+        current_document = current.to_document()
+        candidate_document = candidate.to_document()
+        for document in (current_document, candidate_document):
+            document.pop("revision", None)
+            document.pop("validation", None)
+            document.pop("last_known_good", None)
+        return current_document == candidate_document
+
+    def remove_catalog_entry(
+        self,
+        kind: str,
+        reference: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        references = self.store.catalog_references(kind, reference)
+        if references and force:
+            # Force cleanup is deliberately destructive and explicit: remove
+            # every dependent binding (which also cancels its speech) before
+            # deleting the catalog data. It never leaves a ghost renderer.
+            for binding_id in references:
+                self.store.remove_binding(binding_id)
+            references = []
+        self.catalog.remove(
+            kind,
+            reference,
+            references=references,
+            force=force,
+        )
+
+    def rehydrate(self) -> dict[str, list[str]]:
+        restored: list[str] = []
+        failed: list[str] = []
+        for binding in self.store.list_bindings():
+            snapshot = self.store.effective_snapshot(binding["binding_id"])
+            if snapshot is None:
+                continue
+            voice_ok = self.voice.restore_snapshot(snapshot)
+            renderer_ok = self.renderer.restore_snapshot(snapshot)
+            target = restored if voice_ok and renderer_ok else failed
+            target.append(binding["binding_id"])
+        return {"restored": restored, "failed": failed}
 
     def _stage_and_ack(self, candidate: EffectiveSnapshot) -> None:
         self.store.stage_snapshot(candidate)
