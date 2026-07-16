@@ -17,6 +17,10 @@ This repository is intentionally richer than the distributable skill. It holds t
 
 ## Layout
 
+The source, branching, artifact, and manifest-ownership policy for the
+packaged runtime is in
+[`docs/PACKAGING-AND-REPOSITORY-STRATEGY.md`](docs/PACKAGING-AND-REPOSITORY-STRATEGY.md).
+
 - `skills/codex-voice/` — source skill under development.
 - `live2d-avatar-runtime/` — first-class, self-contained Live2D runtime package bundled into the single `codex-voice` skill release. It is vendored without its upstream `.git` directory and has no external Python dependencies; there is no separate Live2D skill install.
 - `tools/project_release.py` — projects only the installable skill into a clean artifact.

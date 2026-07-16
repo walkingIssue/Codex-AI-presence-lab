@@ -1,0 +1,4 @@
+interface:
+  display_name: "Live2D Avatar Controls"
+  short_description: "Bind and control local Live2D avatars"
+  default_prompt: "Use $live2d-avatar-controls to bind a local Live2D avatar and safely expose its controls."
