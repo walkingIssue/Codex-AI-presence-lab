@@ -1,12 +1,13 @@
-const { app, BrowserWindow, ipcMain, screen, session } = require("electron");
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, session } = require("electron");
+const crypto = require("node:crypto");
 const dgram = require("node:dgram");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { framePolicyArgument, framePolicyFromEnvironment } = require("./frame_policy.cjs");
 const { avatarStateForWindow, routeWindowKeys, windowDescriptors } = require("./presence_windows.cjs");
 const { createVoiceControlRunner } = require("./voice_control.cjs");
 
-const PORT = Number(process.env.CODEX_ORB_PORT || 17831);
 const SIZE = 440;
 const MIN_SIZE = 220;
 const DEFAULT_MARGIN = 36;
@@ -15,9 +16,46 @@ const LOG_PATH = path.join(__dirname, "orb.log");
 const POSITION_PATH = path.join(__dirname, "..", "orb-position.json");
 const VOICE_ROOT = path.join(__dirname, "..");
 const PROJECT_ROOT = path.join(VOICE_ROOT, "..");
+const DEFAULT_ORB_PORT = 17831;
+const ORB_PORT_MIN = 20000;
+const ORB_PORT_SPAN = 30000;
+
+function orbPort() {
+  const configured = Number(process.env.CODEX_ORB_PORT);
+  if (Number.isInteger(configured) && configured >= 1024 && configured <= 65535) {
+    return configured;
+  }
+  const canonicalRoot = path.resolve(VOICE_ROOT);
+  const digest = crypto.createHash("sha256").update(canonicalRoot, "utf8").digest();
+  return ORB_PORT_MIN + digest.readUInt32BE(0) % ORB_PORT_SPAN;
+}
+
+const PORT = orbPort();
+const INTERACTION_REGISTRY_ROOT = path.join(
+  process.env.XDG_RUNTIME_DIR || os.tmpdir(),
+  "codex-strand-orb-interactions",
+);
+const INTERACTION_REGISTRY_PATH = path.join(
+  INTERACTION_REGISTRY_ROOT,
+  `${PORT}-${process.pid}.json`,
+);
+const INTERACTION_HOVER_MAX_AGE_MS = 5000;
+const WAYLAND_INTERACTION_SELECTION = process.platform === "linux" && (
+  String(process.env.XDG_SESSION_TYPE || "").toLowerCase() === "wayland"
+  || Boolean(process.env.WAYLAND_DISPLAY)
+);
+const INTERACTION_PHASE = Object.freeze({
+  IDLE: "idle",
+  SELECTED: "selected",
+  MOVE_ARMED: "move-armed",
+  RESIZE_ARMED: "resize-armed",
+  MOVING: "moving",
+  RESIZING: "resizing",
+});
 const AVATAR_SOURCE_ROOT = path.join(PROJECT_ROOT, ".codex-voice-avatars");
 const AVATAR_SELECTION_PATH = path.join(VOICE_ROOT, "avatar-selection.json");
 const PRESENCE_PROFILES_PATH = path.join(VOICE_ROOT, "presence-profiles.json");
+const SESSION_SCOPE_PATH = path.join(VOICE_ROOT, "sessions.json");
 const AVATAR_STATE_PATH = path.join(VOICE_ROOT, "avatar-state.json");
 const AVATAR_STATES_PATH = path.join(VOICE_ROOT, "avatar-states.json");
 const AVATAR_STATUS_PATH = path.join(VOICE_ROOT, "avatar-state-status.json");
@@ -28,12 +66,14 @@ const AVATAR_STATE_SCHEMA = "codex-ai-presence/avatar-state/v0.1";
 const ROUTE_AVATAR_STATE_SCHEMA = "codex-ai-presence/avatar-state/v0.2";
 const AVATAR_STATE_LEDGER_SCHEMA = "codex-ai-presence/avatar-state-ledger/v0.1";
 const AVATAR_STATUS_LEDGER_SCHEMA = "codex-ai-presence/avatar-state-status-ledger/v0.1";
+const PROFILE_CURATION_SCHEMA = "codex-ai-presence/profile-curation/v0.1";
 const AVATAR_STATE_CAPABILITY = "avatar-state-v1";
 const ACTION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const SOURCE_PATTERN = /^[A-Za-z0-9._:-]{1,80}$/;
 const MAX_ACTIONS = 128;
 const FRAME_POLICY = framePolicyFromEnvironment();
 const FRAME_POLICY_ARGUMENT = framePolicyArgument(FRAME_POLICY);
+const PLATFORM_ARGUMENT = `--codex-platform=${process.platform}`;
 let windowRef = null;
 let socket = null;
 let moveMode = false;
@@ -42,7 +82,16 @@ let avatarStateWatcher = false;
 let activeAvatar = null;
 let activeDescriptor = null;
 let presenceDescriptors = [];
-let foregroundWindowKey = null;
+let audioForegroundWindowKey = null;
+let interactionHoverKey = null;
+let interactionHoverAt = 0;
+let interactionHoverPoint = null;
+let interactionRegistryTimer = null;
+const interactionMachine = {
+  phase: INTERACTION_PHASE.IDLE,
+  selectedKey: null,
+  selectedAt: 0,
+};
 const secondaryWindows = new Map();
 let acceptedProjectAvatarState = null;
 const acceptedRouteAvatarStates = new Map();
@@ -50,6 +99,8 @@ const lastAvatarRevisions = new Map();
 const windowStateWriteTimers = new Map();
 const dragStates = new Map();
 const resizeStates = new Map();
+const persistentMoveModes = new Set();
+const persistentResizeModes = new Set();
 
 function inputSettings() {
   try {
@@ -90,6 +141,346 @@ function log(message) {
   } catch (_) {
     // Diagnostics must never prevent the orb from running.
   }
+}
+
+function transitionInteractionMachine(event, key = null) {
+  if (!WAYLAND_INTERACTION_SELECTION) return;
+  const previousPhase = interactionMachine.phase;
+  const previousKey = interactionMachine.selectedKey;
+  const now = Date.now();
+  switch (event) {
+    case "focus":
+      if (typeof key !== "string" || !key) return;
+      interactionMachine.selectedKey = key;
+      interactionMachine.selectedAt = now;
+      if (previousKey !== key || previousPhase === INTERACTION_PHASE.IDLE) {
+        interactionMachine.phase = INTERACTION_PHASE.SELECTED;
+      }
+      break;
+    case "arm-move":
+      if (typeof key !== "string" || !key) return;
+      interactionMachine.selectedKey = key;
+      interactionMachine.selectedAt ||= now;
+      interactionMachine.phase = INTERACTION_PHASE.MOVE_ARMED;
+      break;
+    case "arm-resize":
+      if (typeof key !== "string" || !key) return;
+      interactionMachine.selectedKey = key;
+      interactionMachine.selectedAt ||= now;
+      interactionMachine.phase = INTERACTION_PHASE.RESIZE_ARMED;
+      break;
+    case "move-start":
+      if (interactionMachine.selectedKey !== key) return;
+      interactionMachine.phase = INTERACTION_PHASE.MOVING;
+      break;
+    case "move-end":
+      if (interactionMachine.selectedKey !== key) return;
+      interactionMachine.phase = persistentMoveModes.has(key)
+        ? INTERACTION_PHASE.MOVE_ARMED
+        : INTERACTION_PHASE.SELECTED;
+      break;
+    case "resize-start":
+      if (interactionMachine.selectedKey !== key) return;
+      interactionMachine.phase = INTERACTION_PHASE.RESIZING;
+      break;
+    case "blur":
+    case "complete":
+    case "cancel":
+      if (key && interactionMachine.selectedKey !== key) return;
+      interactionMachine.phase = INTERACTION_PHASE.IDLE;
+      interactionMachine.selectedKey = null;
+      interactionMachine.selectedAt = 0;
+      break;
+    default:
+      return;
+  }
+  if (previousPhase !== interactionMachine.phase || previousKey !== interactionMachine.selectedKey) {
+    log(
+      `interaction state ${previousPhase}->${interactionMachine.phase} `
+      + `key=${interactionMachine.selectedKey || key || "none"} event=${event}`,
+    );
+  }
+}
+
+function handleRendererFocus(renderer) {
+  if (!renderer || !WAYLAND_INTERACTION_SELECTION) return;
+  transitionInteractionMachine("focus", renderer.key);
+  writeInteractionRegistry();
+}
+
+function handleRendererBlur(renderer) {
+  if (
+    !renderer
+    || !WAYLAND_INTERACTION_SELECTION
+    || interactionMachine.selectedKey !== renderer.key
+  ) {
+    return;
+  }
+  transitionInteractionMachine("blur", renderer.key);
+  if (persistentResizeModes.has(renderer.key)) {
+    setRendererResizeMode(renderer, false, { persistent: true });
+  } else if (persistentMoveModes.has(renderer.key)) {
+    setRendererMoveMode(renderer, false, { persistent: true });
+  }
+  writeInteractionRegistry();
+}
+
+function interactionWindowRecords() {
+  return rendererWindows().flatMap((renderer) => {
+    if (!renderer.window || renderer.window.isDestroyed()) return [];
+    try {
+      const bounds = renderer.window.getBounds();
+      return [{
+        key: renderer.key,
+        x: Number(bounds.x),
+        y: Number(bounds.y),
+        width: Number(bounds.width),
+        height: Number(bounds.height),
+      }];
+    } catch (_) {
+      return [];
+    }
+  });
+}
+
+function writeInteractionRegistry() {
+  try {
+    fs.mkdirSync(INTERACTION_REGISTRY_ROOT, { recursive: true });
+    const record = {
+      schema: "codex-strand-orb/interaction-runtime/v0.1",
+      pid: process.pid,
+      port: PORT,
+      project_root: PROJECT_ROOT,
+      selected_key: interactionMachine.selectedKey,
+      selected_at: interactionMachine.selectedAt,
+      interaction_phase: interactionMachine.phase,
+      wayland_focus_selection: WAYLAND_INTERACTION_SELECTION,
+      hovered_key: interactionHoverKey,
+      hovered_at: interactionHoverAt,
+      hovered_point: interactionHoverPoint,
+      updated_at: Date.now(),
+      windows: interactionWindowRecords(),
+    };
+    const temporary = `${INTERACTION_REGISTRY_PATH}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, "utf8");
+    fs.renameSync(temporary, INTERACTION_REGISTRY_PATH);
+  } catch (error) {
+    log(`interaction registry write failed: ${error.message}`);
+  }
+}
+
+function startInteractionRegistry() {
+  writeInteractionRegistry();
+  interactionRegistryTimer = setInterval(writeInteractionRegistry, 2000);
+  interactionRegistryTimer.unref?.();
+}
+
+function stopInteractionRegistry() {
+  if (interactionRegistryTimer !== null) {
+    clearInterval(interactionRegistryTimer);
+    interactionRegistryTimer = null;
+  }
+  try {
+    fs.unlinkSync(INTERACTION_REGISTRY_PATH);
+  } catch (_) {
+    // The registry is disposable; an absent record is already clean.
+  }
+}
+
+function readInteractionRuntimes() {
+  let names;
+  try {
+    names = fs.readdirSync(INTERACTION_REGISTRY_ROOT);
+  } catch (_) {
+    return [];
+  }
+  const now = Date.now();
+  const runtimes = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const filename = path.join(INTERACTION_REGISTRY_ROOT, name);
+    try {
+      const record = JSON.parse(fs.readFileSync(filename, "utf8"));
+      if (
+        record?.schema !== "codex-strand-orb/interaction-runtime/v0.1"
+        || !Number.isInteger(record.pid)
+        || !Number.isInteger(record.port)
+        || record.port < 1024
+        || record.port > 65535
+        || !Array.isArray(record.windows)
+        || !Number.isFinite(Number(record.updated_at))
+        || now - Number(record.updated_at) > 10000
+      ) {
+        if (now - Number(record?.updated_at) > 10000) fs.unlinkSync(filename);
+        continue;
+      }
+      runtimes.push(record);
+    } catch (_) {
+      // A concurrent atomic replacement or a half-written legacy file is ignored.
+    }
+  }
+  return runtimes;
+}
+
+function interactionWindowContainsPoint(window, point) {
+  return (
+    Number.isFinite(Number(window.x))
+    && Number.isFinite(Number(window.y))
+    && Number(window.width) > 0
+    && Number(window.height) > 0
+    && point.x >= Number(window.x)
+    && point.x < Number(window.x) + Number(window.width)
+    && point.y >= Number(window.y)
+    && point.y < Number(window.y) + Number(window.height)
+  );
+}
+
+function interactionTargetForShortcut(runtimes = readInteractionRuntimes()) {
+  if (!runtimes.length) return null;
+  if (WAYLAND_INTERACTION_SELECTION) {
+    const selected = runtimes.flatMap((runtime) => {
+      if (
+        typeof runtime.selected_key !== "string"
+        || !runtime.selected_key
+        || !Number.isFinite(Number(runtime.selected_at))
+        || Number(runtime.selected_at) <= 0
+        || runtime.interaction_phase === INTERACTION_PHASE.IDLE
+        || !runtime.windows.some((window) => window.key === runtime.selected_key)
+      ) {
+        return [];
+      }
+      return [{ runtime, key: runtime.selected_key, source: "focus" }];
+    });
+    return selected.sort((left, right) => (
+      Number(right.runtime.selected_at) - Number(left.runtime.selected_at)
+      || Number(right.runtime.updated_at || 0) - Number(left.runtime.updated_at || 0)
+    ))[0] || null;
+  }
+  const now = Date.now();
+  const recentlyHovered = runtimes.flatMap((runtime) => {
+    if (
+      typeof runtime.hovered_key !== "string"
+      || Number(runtime.hovered_at) <= 0
+      || now - Number(runtime.hovered_at) > INTERACTION_HOVER_MAX_AGE_MS
+      || !runtime.windows.some((window) => window.key === runtime.hovered_key)
+    ) {
+      return [];
+    }
+    return [{ runtime, key: runtime.hovered_key, source: "hover" }];
+  });
+  if (recentlyHovered.length) {
+    return recentlyHovered.sort((left, right) => (
+      Number(right.runtime.hovered_at || 0) - Number(left.runtime.hovered_at || 0)
+      || Number(right.runtime.updated_at || 0) - Number(left.runtime.updated_at || 0)
+    ))[0] || null;
+  }
+  let point = null;
+  try {
+    point = screen.getCursorScreenPoint();
+  } catch (_) {
+    // Native Wayland may not expose a cursor position; renderer hover is the fallback.
+  }
+  const underCursor = point
+    ? runtimes.flatMap((runtime) => runtime.windows
+      .filter((window) => typeof window.key === "string" && interactionWindowContainsPoint(window, point))
+      .map((window) => ({ runtime, key: window.key, source: "cursor" })))
+    : [];
+  if (underCursor.length) {
+    return underCursor.sort((left, right) => (
+      Number(right.runtime.hovered_key === right.key ? right.runtime.hovered_at || 0 : 0)
+      - Number(left.runtime.hovered_key === left.key ? left.runtime.hovered_at || 0 : 0)
+      || Number(right.runtime.updated_at || 0) - Number(left.runtime.updated_at || 0)
+    ))[0] || null;
+  }
+  const windows = runtimes.flatMap((runtime) => runtime.windows
+    .filter((window) => typeof window.key === "string")
+    .map((window) => ({ runtime, key: window.key, source: "single" })));
+  if (windows.length === 1) return windows[0];
+  return null;
+}
+
+function applyInteractionCommand(command, targetKey) {
+  if (typeof targetKey !== "string" || !targetKey) return false;
+  if (command === "move") {
+    return toggleMoveMode(targetKey);
+  }
+  if (command === "resize") {
+    return toggleResizeMode(targetKey);
+  }
+  return false;
+}
+
+function interactionTargetDiagnostic(target) {
+  if (!target) return "unresolved";
+  return target.runtime.pid === process.pid ? "local" : String(target.runtime.port);
+}
+
+function sendInteractionPacket(runtime, payload, onSent = () => {}) {
+  const packet = Buffer.from(JSON.stringify(payload));
+  try {
+    if (socket) {
+      socket.send(packet, runtime.port, "127.0.0.1", onSent);
+      return;
+    }
+    const sender = dgram.createSocket("udp4");
+    sender.send(packet, runtime.port, "127.0.0.1", (error) => {
+      onSent(error);
+      sender.close();
+    });
+  } catch (error) {
+    onSent(error);
+  }
+}
+
+function dispatchInteractionCommand(command) {
+  const runtimes = readInteractionRuntimes();
+  const target = interactionTargetForShortcut(runtimes);
+  if (!target) {
+    log(
+      `interaction command=${command} target=unresolved `
+      + `selection=${WAYLAND_INTERACTION_SELECTION ? "focus-required" : "pointer"}`,
+    );
+    return;
+  }
+  for (const runtime of runtimes) {
+    if (runtime.pid === target.runtime.pid && runtime.port === target.runtime.port) continue;
+    if (runtime.pid === process.pid || runtime.port === PORT) {
+      clearInteractionModes();
+      continue;
+    }
+    sendInteractionPacket(runtime, {
+      type: "orb-interaction-clear",
+      source_pid: process.pid,
+      issued_at: Date.now(),
+    });
+  }
+  if (target.runtime.pid === process.pid || target.runtime.port === PORT) {
+    log(
+      `interaction command=${command} target=${interactionTargetDiagnostic(target)} `
+      + `key=${target.key} source=${target.source}`,
+    );
+    applyInteractionCommand(command, target.key);
+    return;
+  }
+  sendInteractionPacket(target.runtime, {
+    type: "orb-interaction-command",
+    command,
+    target_key: target.key,
+    source_pid: process.pid,
+    issued_at: Date.now(),
+  }, (error) => {
+    if (error) {
+      log(
+        `interaction command=${command} target=${target.runtime.port} key=${target.key} `
+        + `source=${target.source}: failed ${error.message}`,
+      );
+    } else {
+      log(
+        `interaction command=${command} target=${target.runtime.port} `
+        + `key=${target.key} source=${target.source}`,
+      );
+    }
+  });
 }
 
 function writePid() {
@@ -142,7 +533,37 @@ function configuredPresenceDescriptors() {
   } catch (_) {
     // A missing or invalid profile document preserves the legacy single avatar.
   }
-  return windowDescriptors(document, selectedAvatarId());
+  return windowDescriptors(document, selectedAvatarId(), eligibleRendererSessionIds());
+}
+
+function eligibleRendererSessionIds() {
+  try {
+    const document = JSON.parse(fs.readFileSync(SESSION_SCOPE_PATH, "utf8"));
+    if (document?.version !== 1 || document?.mode !== "session") return null;
+    const sessions = document.sessions && typeof document.sessions === "object"
+      ? document.sessions
+      : {};
+    const eligible = new Set();
+    for (const [sessionId, details] of Object.entries(sessions)) {
+      if (typeof sessionId !== "string" || !sessionId.trim()) continue;
+      if (details && typeof details === "object" && details.enabled === false) continue;
+      const registeredProject = details && typeof details === "object"
+        ? details.project_root
+        : null;
+      if (
+        typeof registeredProject === "string"
+        && path.resolve(registeredProject) !== path.resolve(PROJECT_ROOT)
+      ) {
+        continue;
+      }
+      eligible.add(sessionId.trim());
+    }
+    return eligible;
+  } catch (_) {
+    // Legacy/project-scoped installs have no finite session set. Preserve
+    // their explicit profile bindings rather than guessing from missing data.
+    return null;
+  }
 }
 
 function selectedAvatarInfo(requestedAvatarId = null) {
@@ -312,6 +733,14 @@ function rendererForKey(key) {
   return rendererWindows().find((renderer) => renderer.key === key) || null;
 }
 
+function interactionRenderers() {
+  return rendererWindows().filter((renderer) => (
+    renderer.window
+    && !renderer.window.isDestroyed()
+    && renderer.ready
+  ));
+}
+
 function avatarStateForRenderer(renderer) {
   return avatarStateForWindow(
     renderer.descriptor,
@@ -319,6 +748,17 @@ function avatarStateForRenderer(renderer) {
     acceptedRouteAvatarStates,
     acceptedProjectAvatarState,
   );
+}
+
+function sendProfileCuration(renderer) {
+  if (!renderer?.ready || renderer.window.isDestroyed() || !renderer.descriptor?.curation) return;
+  renderer.window.webContents.send("profile-curation", {
+    schema: PROFILE_CURATION_SCHEMA,
+    session_id: renderer.descriptor.sessionId,
+    profile_id: renderer.descriptor.profileId,
+    route_key: renderer.descriptor.key,
+    ...renderer.descriptor.curation,
+  });
 }
 
 function sendAvatarState(targetRenderer = null) {
@@ -580,9 +1020,9 @@ function routeAudioEvent(event) {
     ));
     // Clearing an unknown owner prevents its following unscoped Kokoro frames
     // from animating whichever session happened to speak previously.
-    foregroundWindowKey = owner?.key || null;
+    audioForegroundWindowKey = owner?.key || null;
   }
-  const targetKeys = new Set(routeWindowKeys(presenceDescriptors, event, foregroundWindowKey));
+  const targetKeys = new Set(routeWindowKeys(presenceDescriptors, event, audioForegroundWindowKey));
   for (const renderer of rendererWindows()) {
     if (renderer.ready && targetKeys.has(renderer.key) && !renderer.window.isDestroyed()) {
       renderer.window.webContents.send("audio-event", event);
@@ -599,6 +1039,20 @@ function startAudioSocket() {
   socket.on("message", (message) => {
     try {
       const event = JSON.parse(message.toString("utf8"));
+      if (event?.type === "orb-interaction-clear") {
+        clearInteractionModes();
+        log(`interaction clear received from=${event.source_pid || "unknown"}`);
+        return;
+      }
+      if (event?.type === "orb-interaction-command") {
+        if (applyInteractionCommand(event.command, event.target_key)) {
+          log(
+            `interaction command=${event.command} key=${event.target_key} `
+            + `received from=${event.source_pid || "unknown"}`,
+          );
+        }
+        return;
+      }
       routeAudioEvent(event);
     } catch (_) {
       // Ignore malformed local packets.
@@ -655,7 +1109,7 @@ function createSecondaryWindow(descriptor, index, primaryState) {
     resizable: true,
     movable: true,
     alwaysOnTop: true,
-    skipTaskbar: true,
+    skipTaskbar: !WAYLAND_INTERACTION_SELECTION,
     hasShadow: false,
     show: false,
     backgroundColor: "#00000000",
@@ -663,7 +1117,7 @@ function createSecondaryWindow(descriptor, index, primaryState) {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.cjs"),
-      additionalArguments: [FRAME_POLICY_ARGUMENT],
+      additionalArguments: [FRAME_POLICY_ARGUMENT, PLATFORM_ARGUMENT],
     },
   });
   const renderer = {
@@ -693,7 +1147,8 @@ function createSecondaryWindow(descriptor, index, primaryState) {
   satellite.webContents.once("did-finish-load", () => {
     renderer.ready = true;
     syncSecondaryRendererScale(renderer);
-    satellite.webContents.send("move-mode", false);
+    applyShortcutModes(renderer);
+    sendProfileCuration(renderer);
     sendAvatarState(renderer);
     satellite.showInactive();
     log(`renderer loaded key=${descriptor.key}`);
@@ -701,14 +1156,23 @@ function createSecondaryWindow(descriptor, index, primaryState) {
   satellite.on("resize", () => {
     syncSecondaryRendererScale(renderer);
     scheduleRendererWindowStateWrite(renderer);
+    writeInteractionRegistry();
   });
-  satellite.on("move", () => scheduleRendererWindowStateWrite(renderer));
+  satellite.on("move", () => {
+    scheduleRendererWindowStateWrite(renderer);
+    writeInteractionRegistry();
+  });
+  satellite.on("focus", () => handleRendererFocus(renderer));
+  satellite.on("blur", () => handleRendererBlur(renderer));
   satellite.on("closed", () => {
     const timer = windowStateWriteTimers.get(renderer.key);
     if (timer !== undefined) clearTimeout(timer);
     windowStateWriteTimers.delete(renderer.key);
     dragStates.delete(renderer.key);
     resizeStates.delete(renderer.key);
+    persistentMoveModes.delete(renderer.key);
+    persistentResizeModes.delete(renderer.key);
+    transitionInteractionMachine("cancel", renderer.key);
     renderer.ready = false;
     secondaryWindows.delete(descriptor.key);
   });
@@ -717,9 +1181,16 @@ function createSecondaryWindow(descriptor, index, primaryState) {
 function createWindow() {
   const display = screen.getPrimaryDisplay();
   presenceDescriptors = configuredPresenceDescriptors();
-  activeDescriptor = presenceDescriptors[0];
+  activeDescriptor = presenceDescriptors[0] || null;
+  if (!activeDescriptor) {
+    audioForegroundWindowKey = null;
+    activeAvatar = null;
+    log("avatar windows: 0 (no enabled project-local profile bindings)");
+    startAvatarStateWatcher();
+    return;
+  }
   const windowState = startupPosition(display, activeDescriptor);
-  foregroundWindowKey = activeDescriptor.key;
+  audioForegroundWindowKey = activeDescriptor.key;
   activeAvatar = selectedAvatarInfo(activeDescriptor.avatarId);
   log(
     `avatar selected key=${activeDescriptor.key}: ${activeAvatar.id}; `
@@ -738,7 +1209,7 @@ function createWindow() {
     resizable: true,
     movable: true,
     alwaysOnTop: true,
-    skipTaskbar: true,
+    skipTaskbar: !WAYLAND_INTERACTION_SELECTION,
     hasShadow: false,
     show: false,
     backgroundColor: "#00000000",
@@ -746,7 +1217,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.cjs"),
-      additionalArguments: [FRAME_POLICY_ARGUMENT],
+      additionalArguments: [FRAME_POLICY_ARGUMENT, PLATFORM_ARGUMENT],
     },
   });
 
@@ -770,18 +1241,30 @@ function createWindow() {
     log("renderer loaded");
     rendererReady = true;
     syncRendererScale();
-    windowRef.webContents.send("move-mode", moveMode);
-    sendAvatarState(rendererForKey(activeDescriptor.key));
+    const renderer = rendererForKey(activeDescriptor.key);
+    if (renderer) applyShortcutModes(renderer);
+    sendProfileCuration(renderer);
+    sendAvatarState(renderer);
     windowRef.showInactive();
   });
   windowRef.on("resize", () => {
     syncRendererScale();
     const renderer = rendererForKey(activeDescriptor.key);
     if (renderer) scheduleRendererWindowStateWrite(renderer);
+    writeInteractionRegistry();
   });
   windowRef.on("move", () => {
     const renderer = rendererForKey(activeDescriptor.key);
     if (renderer) scheduleRendererWindowStateWrite(renderer);
+    writeInteractionRegistry();
+  });
+  windowRef.on("focus", () => {
+    const renderer = rendererForKey(activeDescriptor.key);
+    if (renderer) handleRendererFocus(renderer);
+  });
+  windowRef.on("blur", () => {
+    const renderer = rendererForKey(activeDescriptor.key);
+    if (renderer) handleRendererBlur(renderer);
   });
   windowRef.on("closed", () => {
     const key = activeDescriptor?.key;
@@ -791,6 +1274,9 @@ function createWindow() {
       windowStateWriteTimers.delete(key);
       dragStates.delete(key);
       resizeStates.delete(key);
+      persistentMoveModes.delete(key);
+      persistentResizeModes.delete(key);
+      transitionInteractionMachine("cancel", key);
     }
     rendererReady = false;
     windowRef = null;
@@ -825,17 +1311,173 @@ function rendererForSender(event) {
   return null;
 }
 
-function setRendererMoveMode(renderer, enabled) {
+function rendererMoveModeEnabled(renderer) {
+  return renderer.primary ? moveMode : renderer.moveMode;
+}
+
+function focusRendererForInteraction(renderer) {
+  try {
+    renderer.window.setFocusable(true);
+    renderer.window.setIgnoreMouseEvents(false, { forward: true });
+    if (!renderer.window.isVisible()) renderer.window.show();
+    renderer.window.focus();
+    if (typeof renderer.window.moveTop === "function") renderer.window.moveTop();
+    writeInteractionRegistry();
+    log(`interaction focus key=${renderer.key}`);
+  } catch (error) {
+    log(`interaction focus failed key=${renderer.key}: ${error.message}`);
+  }
+}
+
+function releaseRendererInteraction(renderer) {
+  try {
+    renderer.window.setIgnoreMouseEvents(true, { forward: true });
+    renderer.window.blur();
+  } catch (error) {
+    log(`interaction release failed key=${renderer.key}: ${error.message}`);
+  }
+}
+
+function setRendererMoveMode(renderer, enabled, options = {}) {
   const next = Boolean(enabled);
+  const persistent = options.persistent === true;
+  const previous = rendererMoveModeEnabled(renderer);
+  const wasPersistent = persistentMoveModes.has(renderer.key);
+  if (!persistent && !next && persistentMoveModes.has(renderer.key)) return;
+  if (persistent) {
+    if (next) persistentMoveModes.add(renderer.key);
+    else persistentMoveModes.delete(renderer.key);
+  }
+  const isPersistent = persistentMoveModes.has(renderer.key);
+  if (previous === next && wasPersistent === isPersistent) return;
   if (renderer.primary) moveMode = next;
   else renderer.moveMode = next;
   dragStates.delete(renderer.key);
-  renderer.window.setIgnoreMouseEvents(!next, { forward: true });
-  renderer.window.webContents.send("move-mode", next);
-  log(`move mode key=${renderer.key}: ${next ? "on" : "off"}`);
+  if (next) focusRendererForInteraction(renderer);
+  if (persistent && next && !persistentResizeModes.has(renderer.key)) {
+    transitionInteractionMachine("arm-move", renderer.key);
+  } else if (persistent && !next) {
+    transitionInteractionMachine("complete", renderer.key);
+  }
+  if (!next) releaseRendererInteraction(renderer);
+  renderer.window.webContents.send("move-mode", {
+    enabled: next,
+    persistent: isPersistent,
+  });
+  log(`move mode key=${renderer.key}: ${next ? "on" : "off"}${persistent ? " (toggle)" : ""}`);
+}
+
+function setRendererResizeMode(renderer, enabled, options = {}) {
+  const next = Boolean(enabled);
+  const persistent = options.persistent === true;
+  if (!persistent && !next && persistentResizeModes.has(renderer.key)) return;
+  if (persistent) {
+    if (next) persistentResizeModes.add(renderer.key);
+    else persistentResizeModes.delete(renderer.key);
+  }
+  if (next) {
+    setRendererMoveMode(renderer, true, { persistent });
+    if (persistent) transitionInteractionMachine("arm-resize", renderer.key);
+    renderer.window.webContents.send("resize-mode", true);
+    log(`resize mode key=${renderer.key}: on${persistent ? " (toggle)" : ""}`);
+    return;
+  }
+  renderer.window.webContents.send("resize-mode", false);
+  if (persistent) {
+    persistentMoveModes.delete(renderer.key);
+    setRendererMoveMode(renderer, false, { persistent: true });
+    transitionInteractionMachine("complete", renderer.key);
+  } else if (!persistentMoveModes.has(renderer.key)) {
+    setRendererMoveMode(renderer, false);
+  }
+  log(`resize mode key=${renderer.key}: off${persistent ? " (toggle)" : ""}`);
+}
+
+function applyShortcutModes(renderer) {
+  if (!renderer || !renderer.ready || renderer.window.isDestroyed()) return;
+  if (persistentResizeModes.has(renderer.key)) {
+    setRendererResizeMode(renderer, true, { persistent: true });
+  } else if (persistentMoveModes.has(renderer.key)) {
+    setRendererMoveMode(renderer, true, { persistent: true });
+  } else {
+    renderer.window.webContents.send("move-mode", false);
+    renderer.window.webContents.send("resize-mode", false);
+  }
+}
+
+function interactionRendererForKey(targetKey) {
+  const renderer = rendererForKey(targetKey);
+  if (!renderer || !renderer.ready || renderer.window.isDestroyed()) return null;
+  return renderer;
+}
+
+function clearInteractionModes(exceptKey = null) {
+  for (const renderer of interactionRenderers()) {
+    if (renderer.key === exceptKey) continue;
+    if (persistentResizeModes.has(renderer.key)) {
+      setRendererResizeMode(renderer, false, { persistent: true });
+    } else if (persistentMoveModes.has(renderer.key)) {
+      setRendererMoveMode(renderer, false, { persistent: true });
+    }
+  }
+}
+
+function toggleMoveMode(targetKey) {
+  const renderer = interactionRendererForKey(targetKey);
+  if (!renderer) return false;
+  const resizeWasEnabled = persistentResizeModes.has(renderer.key);
+  const moveWasEnabled = persistentMoveModes.has(renderer.key) && !resizeWasEnabled;
+  clearInteractionModes(renderer.key);
+  if (resizeWasEnabled) {
+    setRendererResizeMode(renderer, false, { persistent: true });
+  }
+  setRendererMoveMode(renderer, !moveWasEnabled, { persistent: true });
+  return true;
+}
+
+function toggleResizeMode(targetKey) {
+  const renderer = interactionRendererForKey(targetKey);
+  if (!renderer) return false;
+  const enabled = !persistentResizeModes.has(renderer.key);
+  clearInteractionModes(renderer.key);
+  setRendererResizeMode(renderer, enabled, { persistent: true });
+  return true;
+}
+
+function registerInteractionShortcuts() {
+  const isMac = process.platform === "darwin";
+  const moveAccelerator = process.env.CODEX_ORB_MOVE_ACCELERATOR
+    || (isMac ? "Command+Option+M" : "Control+Alt+M");
+  const resizeAccelerator = process.env.CODEX_ORB_RESIZE_ACCELERATOR
+    || (isMac ? "Command+Option+Shift+K" : "Control+Alt+Shift+K");
+  for (const [accelerator, callback, label] of [
+    [moveAccelerator, () => dispatchInteractionCommand("move"), "move"],
+    [resizeAccelerator, () => dispatchInteractionCommand("resize"), "resize"],
+  ]) {
+    try {
+      const registered = globalShortcut.register(accelerator, callback);
+      log(`shortcut ${label} ${accelerator}: ${registered ? "registered" : "unavailable"}`);
+    } catch (error) {
+      log(`shortcut ${label} ${accelerator}: failed ${error.message}`);
+    }
+  }
 }
 
 ipcMain.on("close-orb", () => app.quit());
+ipcMain.on("orb-pointer-activity", (event, payload) => {
+  if (WAYLAND_INTERACTION_SELECTION) return;
+  const renderer = rendererForSender(event);
+  const point = pointFromPayload(payload);
+  const clientX = Number(payload?.clientX);
+  const clientY = Number(payload?.clientY);
+  if (!renderer || !point || !Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+  const [width, height] = renderer.window.getContentSize();
+  if (clientX < 0 || clientY < 0 || clientX >= width || clientY >= height) return;
+  interactionHoverKey = renderer.key;
+  interactionHoverAt = Date.now();
+  interactionHoverPoint = { x: point.x, y: point.y };
+  writeInteractionRegistry();
+});
 ipcMain.on("set-move-mode", (event, enabled) => {
   const renderer = rendererForSender(event);
   if (renderer) setRendererMoveMode(renderer, enabled);
@@ -908,6 +1550,10 @@ ipcMain.on("orb-drag-start", (event, payload) => {
   if (!point) return;
   const [x, y] = renderer.window.getPosition();
   dragStates.set(renderer.key, { offsetX: point.x - x, offsetY: point.y - y });
+  if (persistentMoveModes.has(renderer.key)) {
+    transitionInteractionMachine("move-start", renderer.key);
+    writeInteractionRegistry();
+  }
 });
 ipcMain.on("orb-drag", (event, payload) => {
   const renderer = rendererForSender(event);
@@ -932,6 +1578,8 @@ ipcMain.on("orb-drag-end", (event) => {
   if (!renderer) return;
   writeRendererWindowState(renderer);
   dragStates.delete(renderer.key);
+  transitionInteractionMachine("move-end", renderer.key);
+  writeInteractionRegistry();
 });
 
 ipcMain.on("orb-resize-start", (event, payload) => {
@@ -946,7 +1594,12 @@ ipcMain.on("orb-resize-start", (event, payload) => {
     startWidth: width,
     startHeight: height,
   });
+  if (persistentResizeModes.has(renderer.key)) {
+    transitionInteractionMachine("resize-start", renderer.key);
+    writeInteractionRegistry();
+  }
   setRendererMoveMode(renderer, true);
+  renderer.window.webContents.send("resize-mode", true);
   log(`resize mode key=${renderer.key}: on`);
 });
 
@@ -970,26 +1623,45 @@ ipcMain.on("orb-resize-end", (event) => {
   if (!renderer || !resizeStates.has(renderer.key)) return;
   writeRendererWindowState(renderer);
   resizeStates.delete(renderer.key);
-  setRendererMoveMode(renderer, false);
-  log(`resize mode key=${renderer.key}: off`);
+  if (persistentResizeModes.has(renderer.key)) {
+    // Toggle-resize is a one-shot affordance: resize once, then return to the
+    // normal click-through state so it cannot catch editor clicks later.
+    setRendererResizeMode(renderer, false, { persistent: true });
+  } else {
+    renderer.window.webContents.send("resize-mode", false);
+    setRendererMoveMode(renderer, false);
+    log(`resize mode key=${renderer.key}: off`);
+  }
 });
 
 app.whenReady().then(() => {
   app.setAppUserModelId("Codex.StrandOrb");
+  log(
+    `launch orb-port=${PORT} voice-root=${VOICE_ROOT} `
+    + `interaction-selection=${WAYLAND_INTERACTION_SELECTION ? "wayland-focus" : "pointer"}`,
+  );
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === "media" && inputEnabled());
   });
+  registerInteractionShortcuts();
   writePid();
   startAudioSocket();
   createWindow();
+  startInteractionRegistry();
 });
 
 app.on("before-quit", () => {
+  log("before-quit");
+  persistentMoveModes.clear();
+  persistentResizeModes.clear();
+  transitionInteractionMachine("cancel");
   for (const renderer of rendererWindows()) {
     writeRendererWindowState(renderer);
     setRendererMoveMode(renderer, false);
   }
   stopAvatarStateWatcher();
+  stopInteractionRegistry();
+  globalShortcut.unregisterAll();
   rendererReady = false;
   if (socket) {
     socket.close();
@@ -1000,4 +1672,28 @@ app.on("before-quit", () => {
 
 app.on("window-all-closed", (event) => {
   event.preventDefault();
+});
+
+app.on("child-process-gone", (_event, details) => {
+  log(
+    `child process gone type=${details.type || "unknown"} `
+    + `reason=${details.reason || "unknown"} exitCode=${details.exitCode ?? "unknown"}`,
+  );
+});
+
+app.on("quit", (_event, exitCode) => {
+  log(`quit exitCode=${exitCode}`);
+});
+
+process.on("uncaughtException", (error) => {
+  log(`uncaught exception name=${error?.name || "Error"} message=${error?.message || error}`);
+  try {
+    app.quit();
+  } catch (_) {
+    // The process is already failing; the log entry is the useful diagnostic.
+  }
+});
+
+process.on("unhandledRejection", (reason) => {
+  log(`unhandled rejection reason=${reason instanceof Error ? reason.stack || reason.message : String(reason)}`);
 });

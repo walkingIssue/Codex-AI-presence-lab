@@ -1,4 +1,4 @@
-"""Transparent Codex TUI/server proxy with a mocked Kokoro worker seam.
+"""Transparent Codex TUI/server proxy with a shared arbiter seam.
 
 The bridge owns the transport boundary, not speech inference.  It forwards
 every upstream JSONL line unchanged and observes only explicit visible
@@ -7,9 +7,10 @@ transport-neutral stream protocol for a Kokoro worker:
 
     start -> delta* -> finish
 
-The default worker is an in-memory recorder so this path is safe to exercise
-before the inference worker is available.  ``--worker-command`` can later
-point at the real worker without changing the TUI/server protocol.
+The stock launcher uses ``ArbiterInboxAdapter``: it never starts a second
+Kokoro process and commits completed visible responses to the project-local
+adapter inbox consumed by the user-level global PlaybackArbiter. Injectable
+worker classes remain available for transport tests and custom adapters.
 """
 
 from __future__ import annotations
@@ -26,6 +27,9 @@ from pathlib import Path
 from typing import Protocol, TextIO
 
 from cli_adapter import codex_executable, command_args, prepare_command
+from delivery import resolve_session_label
+from inbox import Inbox, SCHEMA as MESSAGE_SCHEMA, database_path, stable_event_id
+from profiles import ProfileRegistry
 
 
 BRIDGE_SCHEMA = "codex-voice/tui-bridge/v0.1"
@@ -181,6 +185,110 @@ class JsonlKokoroWorker:
                 process.stdout.close()
             except OSError:
                 pass
+
+
+def configured_volume(voice_root: Path) -> int:
+    try:
+        value = int((voice_root / "volume").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        value = 20
+    return max(0, min(100, value))
+
+
+class ArbiterInboxAdapter:
+    """Route TUI output into the user-level singleton playback arbiter.
+
+    The adapter deliberately has no subprocess and never loads Kokoro.  It
+    buffers visible deltas per TUI stream, then commits one durable speech
+    envelope to the shared SQLite inbox when the visible assistant item is
+    complete.  The project watcher claims that envelope and sends it through
+    its already-warm PlaybackArbiter/TTSWorker.
+    """
+
+    def __init__(self, project_root: Path, voice_root: Path) -> None:
+        self.project_root = project_root.resolve()
+        self.voice_root = voice_root.resolve()
+        self.inbox = Inbox(database_path(self.voice_root))
+        self.profiles = ProfileRegistry(self.project_root, self.voice_root)
+        self.streams: dict[str, dict[str, object]] = {}
+        self.started = False
+
+    def start(self) -> bool:
+        try:
+            enabled = (self.voice_root / "enabled").read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            enabled = ""
+        self.started = enabled in {"1", "true", "on", "enabled"}
+        if self.started:
+            log(self.voice_root, "TUI output routed to shared PlaybackArbiter inbox")
+        else:
+            log(self.voice_root, "TUI arbiter route disabled; no speech will be queued")
+        return self.started
+
+    def send(self, event: dict[str, object]) -> bool:
+        if not self.started:
+            return False
+        event_type = event.get("type")
+        stream_id = _text(event.get("stream_id"))
+        if not stream_id:
+            return False
+        if event_type == "start":
+            self.streams[stream_id] = {"identity": dict(event), "parts": []}
+            return True
+        if event_type == "cancel":
+            self.streams.pop(stream_id, None)
+            return True
+        if event_type == "delta":
+            stream = self.streams.setdefault(stream_id, {"identity": dict(event), "parts": []})
+            parts = stream.get("parts")
+            if not isinstance(parts, list):
+                parts = []
+                stream["parts"] = parts
+            text = event.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+            return True
+        if event_type != "finish":
+            return False
+
+        stream = self.streams.pop(stream_id, None)
+        if not stream:
+            return False
+        parts = stream.get("parts")
+        text = "".join(value for value in parts if isinstance(value, str)).strip() if isinstance(parts, list) else ""
+        if not text:
+            return True
+        identity = stream.get("identity")
+        identity = identity if isinstance(identity, dict) else event
+        session_id = _text(identity.get("session_id"))
+        turn_id = _text(identity.get("turn_id"))
+        profile = self.profiles.resolve(session_id)
+        message = {
+            "schema": MESSAGE_SCHEMA,
+            "event_id": stable_event_id("codex-tui", self.project_root, stream_id),
+            "project_root": str(self.project_root),
+            "session_id": session_id,
+            "thread_id": session_id,
+            "turn_id": turn_id,
+            "session_label": resolve_session_label(self.project_root, session_id),
+            "kind": "final",
+            "text": text,
+            "sequence": 1,
+            "volume": configured_volume(self.voice_root),
+            "announced_key": f"{session_id}:{turn_id or 'session'}",
+            **profile.routing_fields(),
+        }
+        inserted = self.inbox.enqueue(message)
+        log(
+            self.voice_root,
+            f"TUI visible response handed to shared arbiter: {len(text)} characters; "
+            + ("queued" if inserted else "duplicate"),
+        )
+        return inserted
+
+    def close(self) -> None:
+        self.streams.clear()
+        self.started = False
 
 
 @dataclass(frozen=True)

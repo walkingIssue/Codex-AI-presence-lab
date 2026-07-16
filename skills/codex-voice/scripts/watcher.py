@@ -16,10 +16,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from activity import classify_activity, state_ttl_seconds
+from activity import classify_activity, orb_port_for_root, state_ttl_seconds
 from clipboard import ClipboardError, copy_text
 from configuration import configured_commentary_volume
 from delivery import AppServerClient, DeliveryError, resolve_session_label
+from global_arbiter import GlobalPlaybackArbiter
 from inbox import Inbox, database_path, stable_event_id, stable_visible_final_event_id
 from presence_service import PresenceService
 from session_scope import (
@@ -53,10 +54,10 @@ def log(voice_root: Path, message: str) -> None:
         pass
 
 
-def emit_orb_event(event: dict[str, object]) -> None:
+def emit_orb_event(event: dict[str, object], voice_root: Path | None = None) -> None:
     """Send an optional local-only event; renderers may ignore unknown types."""
     try:
-        port = int(os.environ.get("CODEX_ORB_PORT", "17831"))
+        port = orb_port_for_root(voice_root)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(json.dumps(event, separators=(",", ":")).encode("utf-8"), ("127.0.0.1", port))
     except (OSError, ValueError):
@@ -356,17 +357,36 @@ class TTSWorker:
             elif self.ready:
                 return True
             else:
-                return self._read_ready()
+                self.close()
 
         python, provider = runtime_for_provider(self.voice_root)
         hook = self.project_root / ".codex" / "hooks" / "speak.py"
-        if not python.is_file() or not hook.is_file():
+        if not hook.is_file():
             log(self.voice_root, "persistent worker skipped: runtime or speak.py missing")
             return False
 
+        attempts: list[tuple[Path, str]] = [(python, provider)]
+        if provider == "openvino":
+            cpu = environment_python(self.voice_root / ".venv")
+            if cpu.is_file() and cpu.absolute() != python.absolute():
+                attempts.append((cpu, "cpu"))
+
+        for index, (selected_python, selected_provider) in enumerate(attempts):
+            if not selected_python.is_file():
+                continue
+            if not self._spawn(selected_python, selected_provider, hook):
+                continue
+            if self._read_ready():
+                return True
+            if index + 1 < len(attempts):
+                log(self.voice_root, "persistent worker preload failed; retrying with CPU Kokoro")
+        return False
+
+    def _spawn(self, python: Path, provider: str, hook: Path) -> bool:
         environment = os.environ.copy()
         environment["CODEX_TTS_FROM_WATCHER"] = "1"
         environment["CODEX_TTS_PROVIDER"] = provider
+        environment["CODEX_ORB_PORT"] = str(orb_port_for_root(self.voice_root))
         log(self.voice_root, f"starting persistent TTS worker provider={provider}")
         try:
             self.process = subprocess.Popen(
@@ -384,7 +404,7 @@ class TTSWorker:
             log(self.voice_root, f"persistent worker start error: {type(exc).__name__}")
             self.process = None
             return False
-        return self._read_ready()
+        return True
 
     def _read_ready(self) -> bool:
         if self.process is None or self.process.stdout is None:
@@ -691,7 +711,8 @@ class PlaybackArbiter:
                   "profile_id": message.get("profile_id"),
                   "avatar_id": message.get("avatar_id"),
                   "route_key": message.get("route_key"),
-                  "kind": "commentary" if ephemeral_update else message.get("kind")},
+                      "kind": "commentary" if ephemeral_update else message.get("kind")},
+                self.voice_root,
             )
             try:
                 outcome = self.worker.send(
@@ -954,7 +975,7 @@ class VoiceInputController:
         if capture_sequence is not None:
             payload["capture_sequence"] = capture_sequence
         self.inbox.set_state("input", payload)
-        emit_orb_event({"type": "voice-input", **payload})
+        emit_orb_event({"type": "voice-input", **payload}, self.voice_root)
 
     def handle_controls(self) -> None:
         for control in self.inbox.consume_controls():
@@ -1326,6 +1347,7 @@ def speak(
     environment = os.environ.copy()
     environment["CODEX_TTS_FROM_WATCHER"] = "1"
     environment["CODEX_TTS_PROVIDER"] = provider
+    environment["CODEX_ORB_PORT"] = str(orb_port_for_root(voice_root))
     if volume is not None:
         environment["CODEX_TTS_VOLUME"] = str(max(0, min(100, volume)))
     try:
@@ -1464,7 +1486,9 @@ def main() -> int:
     if stale_progress.exists():
         stale_progress.unlink(missing_ok=True)
         log(voice_root, "cleared stale TTS progress cursor after restart")
-    arbiter = PlaybackArbiter(project_root, voice_root, inbox)
+    # Playback is globally owned.  This watcher only adapts rollout records
+    # and registers its project/session route with the user-level arbiter.
+    arbiter = GlobalPlaybackArbiter(project_root, voice_root, inbox)
     presence = PresenceService(project_root, voice_root, inbox, arbiter)
     input_controller = VoiceInputController(project_root, voice_root, inbox, arbiter)
     activity_tracker = ActivityTracker(presence)
@@ -1593,6 +1617,7 @@ def main() -> int:
             for completed in presence.drain_completed():
                 input_controller.notify_completed(completed)
             input_controller.tick()
+            arbiter.sync_inbox()
             activity_tracker.tick(time.monotonic())
             time.sleep(POLL_SECONDS)
         log(voice_root, "stopping: voice marker is off")

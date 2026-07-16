@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -11,6 +12,11 @@ from pathlib import Path
 
 
 DEFAULT_ORB_PORT = 17831
+# The Orb endpoint is local-only, but it must still be isolated when more than
+# one project runtime is active.  Keep the historical port as the fallback for
+# callers that do not identify a project.
+ORB_PORT_MIN = 20000
+ORB_PORT_SPAN = 30000
 ACTIVITY_STATES = ("idle", "thinking", "tool", "skill", "cli", "waiting", "error")
 LOCAL_TOOL_NAMES = {
     "bash",
@@ -20,6 +26,14 @@ LOCAL_TOOL_NAMES = {
     "run_command",
     "shell_command",
     "terminal",
+}
+SKILL_TOOL_NAMES = {
+    "skill",
+    "skill_invoke",
+    "skill_read",
+    "skill_view",
+    "skills.list",
+    "skills.read",
 }
 ACTIVITY_TTL_SECONDS = {
     "idle": 0.0,
@@ -49,6 +63,8 @@ def classify_activity(record: dict) -> str | None:
     if outer_type == "event_msg":
         if inner_type == "agent_reasoning":
             return "thinking"
+        if inner_type in {"task_started", "turn_started", "agent_turn_started"}:
+            return "thinking"
         if inner_type in {
             "mcp_tool_call_start",
             "mcp_tool_call_end",
@@ -62,16 +78,29 @@ def classify_activity(record: dict) -> str | None:
             return "skill"
         if inner_type == "skill_end":
             return "thinking"
-        if inner_type in {"task_complete", "turn_complete", "session_end"}:
+        if inner_type in {"task_complete", "turn_complete", "session_end", "turn_aborted"}:
             return "idle"
-        if inner_type == "agent_message" and payload.get("phase") == "final_answer":
-            return "idle"
+        if inner_type in {"error", "agent_error", "stream_error", "turn_failed"}:
+            return "error"
+        if inner_type in {"approval_request", "user_input_required", "waiting"}:
+            return "waiting"
+        if inner_type == "agent_message":
+            if payload.get("phase") == "final_answer":
+                return "idle"
+            if payload.get("phase") == "commentary":
+                return "thinking"
         return None
 
     if outer_type == "response_item":
+        if inner_type == "reasoning":
+            return "thinking"
         if inner_type in {"custom_tool_call", "function_call", "web_search_call"}:
             name = payload.get("name")
             normalized_name = name.strip().lower() if isinstance(name, str) else ""
+            if normalized_name in SKILL_TOOL_NAMES:
+                return "skill"
+            if normalized_name in {"request_user_input", "ask_user", "approval_request"}:
+                return "waiting"
             return "cli" if normalized_name in LOCAL_TOOL_NAMES else "tool"
         if inner_type in {"custom_tool_call_output", "function_call_output"}:
             return "thinking"
@@ -83,16 +112,35 @@ def state_ttl_seconds(state: str) -> float:
     return ACTIVITY_TTL_SECONDS.get(state, ACTIVITY_TTL_SECONDS["thinking"])
 
 
+def orb_port_for_root(voice_root: Path | None = None) -> int:
+    """Return the localhost Orb port owned by one project voice runtime.
+
+    ``CODEX_ORB_PORT`` remains an explicit override for development and
+    troubleshooting.  Otherwise the canonical voice-root path provides a
+    stable per-project endpoint, so independent project runtimes cannot steal
+    each other's activity or audio packets.
+    """
+    configured = os.environ.get("CODEX_ORB_PORT")
+    if configured:
+        try:
+            port = int(configured)
+        except ValueError:
+            port = 0
+        if 1024 <= port <= 65535:
+            return port
+
+    if voice_root is None:
+        return DEFAULT_ORB_PORT
+    canonical_root = str(Path(voice_root).expanduser().resolve())
+    digest = hashlib.sha256(canonical_root.encode("utf-8")).digest()
+    return ORB_PORT_MIN + int.from_bytes(digest[:4], "big") % ORB_PORT_SPAN
+
+
 class ActivityEmitter:
     """Send category-only activity packets over the existing localhost UDP bridge."""
 
-    def __init__(self, port: int | None = None) -> None:
-        configured_port = port
-        if configured_port is None:
-            try:
-                configured_port = int(os.environ.get("CODEX_ORB_PORT", str(DEFAULT_ORB_PORT)))
-            except ValueError:
-                configured_port = DEFAULT_ORB_PORT
+    def __init__(self, port: int | None = None, voice_root: Path | None = None) -> None:
+        configured_port = port if port is not None else orb_port_for_root(voice_root)
         self.address = ("127.0.0.1", configured_port)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sequence = 0
@@ -154,7 +202,7 @@ def main() -> int:
         print(f"No project-local voice directory was found: {voice_root}")
         return 2
 
-    emitter = ActivityEmitter()
+    emitter = ActivityEmitter(voice_root=voice_root)
     try:
         sent = emitter.send(
             args.state,

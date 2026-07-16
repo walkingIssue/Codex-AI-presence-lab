@@ -29,6 +29,18 @@ def main() -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source_skill, destination, ignore=IGNORE)
 
+    # The Live2D runtime is an internal package of the unified skill. Keep it
+    # beside the skill's scripts in projected releases so the launcher never
+    # depends on a separately installed global runtime or skill.
+    source_live2d = source_root / "live2d-avatar-runtime"
+    destination_live2d = destination / "live2d-avatar-runtime"
+    if not source_live2d.is_dir():
+        raise SystemExit(f"Bundled Live2D runtime was not found: {source_live2d}")
+    # The projected skill may contain skill-specific metadata alongside an
+    # earlier runtime projection.  Overlay the canonical runtime so shared
+    # files always match the release source while preserving that metadata.
+    shutil.copytree(source_live2d, destination_live2d, ignore=IGNORE, dirs_exist_ok=True)
+
     forbidden = []
     for path in output_root.rglob("*"):
         if not path.is_file():

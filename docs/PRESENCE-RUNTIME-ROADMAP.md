@@ -28,6 +28,10 @@ Electron.
 The Live2D runtime remains a renderer/control extension. It does not own
 global playback, session focus, inbox ordering, or process shutdown.
 
+The authoritative source, branch, artifact, and ownership policy for this
+packaged runtime is in
+[`PACKAGING-AND-REPOSITORY-STRATEGY.md`](PACKAGING-AND-REPOSITORY-STRATEGY.md).
+
 ## What ACP is and is not
 
 ACP is an optional host adapter transport. It is not a magic shared provider

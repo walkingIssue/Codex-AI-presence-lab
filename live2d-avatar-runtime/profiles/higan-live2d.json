@@ -1,0 +1,110 @@
+{
+  "schema": "live2d-avatar/profile/v0.1",
+  "name": "Higan Live2D controls",
+  "state_semantics": "active-toggle-set",
+  "semantic_status": "curated",
+  "action_descriptions": {
+    "pose.qipao-pipe": "Toggles the model's qipao-and-pipe expression. It may combine with other active expression toggles.",
+    "pose.sweater-heart": "Toggles the model's sweater heart-hand expression. It may combine with other active expression toggles.",
+    "pose.sweater-default": "Toggles the model's sweater default expression. It may combine with other active expression toggles.",
+    "style.hairstyle": "Toggles the model's alternate-hairstyle expression. It may combine with other active expression toggles.",
+    "eyes.dazed": "Toggles the model's dazed-eyes expression. It may combine with other active expression toggles.",
+    "accessory.fur-shawl": "Toggles the model's fur-shawl expression. It may combine with other active expression toggles.",
+    "eyes.heart": "Toggles the model's heart-eyes expression. It may combine with other active expression toggles.",
+    "effect.tears": "Toggles the model's tears expression. It may combine with other active expression toggles.",
+    "effect.dark-face": "Toggles the model's dark-face expression. It may combine with other active expression toggles.",
+    "accessory.black-stockings": "Toggles the model's black-stockings expression. It may combine with other active expression toggles.",
+    "accessory.dragon-horns": "Toggles the model's dragon-horns expression. It may combine with other active expression toggles.",
+    "motion.dynamic-1": "Toggles the model's first dynamic expression. It may combine with other active expression toggles.",
+    "motion.dynamic-2": "Toggles the model's second dynamic expression. It may combine with other active expression toggles.",
+    "mouth.unhappy": "Toggles the model's unhappy-mouth expression. It may combine with other active expression toggles.",
+    "motion.lean": "Toggles the model's leaning expression. It may combine with other active expression toggles.",
+    "motion.horizontal": "Toggles the model's horizontal-motion expression. It may combine with other active expression toggles.",
+    "safety.clean-state": "Applies the renderer-local clean-display baseline.",
+    "effect.drool": "Toggles the model's drool expression. It may combine with other active expression toggles.",
+    "pose.right-hand-pipe": "Toggles the model's right-hand-pipe expression. It may combine with other active expression toggles.",
+    "mouth.tongue": "Toggles the model's tongue-out expression. It may combine with other active expression toggles.",
+    "pose.qipao-hand-mouth": "Toggles the model's qipao hand-to-mouth expression. It may combine with other active expression toggles.",
+    "pose.sweater-hand-mouth-left": "Toggles the model's sweater left hand-to-mouth expression. It may combine with other active expression toggles.",
+    "pose.sweater-hand-mouth-right": "Toggles the model's sweater right hand-to-mouth expression. It may combine with other active expression toggles.",
+    "effect.blush": "Toggles the model's blush expression. It may combine with other active expression toggles."
+  },
+  "actions": [
+    { "source_file": "A-\u65d7\u888d\u624b\u62ff\u70df\u6597\u59ff\u6001.exp3.json", "id": "pose.qipao-pipe", "label": "Qipao pipe toggle" },
+    { "source_file": "A-\u6bdb\u8863\u7231\u5fc3\u773c\u624b\u6bd4\u5fc3.exp3.json", "id": "pose.sweater-heart", "label": "Sweater heart-hand toggle" },
+    { "source_file": "A-\u6bdb\u8863\u9ed8\u8ba4\u59ff\u6001.exp3.json", "id": "pose.sweater-default", "label": "Sweater default toggle" },
+    { "source_file": "B-\u53d1\u578b.exp3.json", "id": "style.hairstyle", "label": "Alternate-hairstyle toggle" },
+    { "source_file": "B-\u5931\u795e\u9ed1\u773c.exp3.json", "id": "eyes.dazed", "label": "Dazed-eyes toggle" },
+    { "source_file": "B-\u6bdb\u7ed2\u62ab\u80a9.exp3.json", "id": "accessory.fur-shawl", "label": "Fur-shawl toggle" },
+    { "source_file": "B-\u7231\u5fc3\u773c.exp3.json", "id": "eyes.heart", "label": "Heart-eyes toggle" },
+    { "source_file": "B-\u773c\u6cea.exp3.json", "id": "effect.tears", "label": "Tears toggle" },
+    { "source_file": "B-\u8138\u9ed1.exp3.json", "id": "effect.dark-face", "label": "Dark-face toggle" },
+    { "source_file": "B-\u9ed1\u4e1d.exp3.json", "id": "accessory.black-stockings", "label": "Black-stockings toggle" },
+    { "source_file": "B-\u9f99\u89d2.exp3.json", "id": "accessory.dragon-horns", "label": "Dragon-horns toggle" },
+    { "source_file": "C-\u52a8\u60011.exp3.json", "id": "motion.dynamic-1", "label": "Dynamic-1 toggle" },
+    { "source_file": "C-\u52a8\u60012.exp3.json", "id": "motion.dynamic-2", "label": "Dynamic-2 toggle" },
+    { "source_file": "M\u4e0d\u4e50\u53e3\u578b.exp3.json", "id": "mouth.unhappy", "label": "Unhappy-mouth toggle" },
+    { "source_file": "M\u524d\u503e\u540e\u4ef0\u5f00\u5173.exp3.json", "id": "motion.lean", "label": "Lean toggle" },
+    { "source_file": "M\u5de6\u53f3\u5e73\u79fb\u5f00\u5173.exp3.json", "id": "motion.horizontal", "label": "Horizontal-motion toggle" },
+    { "source_file": "shuiyin.exp3.json", "id": "safety.clean-state", "label": "Clean display baseline" },
+    { "source_file": "\u53e3\u6c34.exp3.json", "id": "effect.drool", "label": "Drool toggle" },
+    { "source_file": "\u53f3\u624b \u70df\u6597.exp3.json", "id": "pose.right-hand-pipe", "label": "Right-hand-pipe toggle" },
+    { "source_file": "\u5410\u820c.exp3.json", "id": "mouth.tongue", "label": "Tongue-out toggle" },
+    { "source_file": "\u62b1\u81c2\u624b\u653e\u5634\uff08\u65d7\u888d.exp3.json", "id": "pose.qipao-hand-mouth", "label": "Qipao hand-to-mouth toggle" },
+    { "source_file": "\u6bdb\u8863\u624b\u653e\u5634\u2190.exp3.json", "id": "pose.sweater-hand-mouth-left", "label": "Sweater left hand-to-mouth toggle" },
+    { "source_file": "\u6bdb\u8863\u624b\u653e\u5634\u2192.exp3.json", "id": "pose.sweater-hand-mouth-right", "label": "Sweater right hand-to-mouth toggle" },
+    { "source_file": "\u8138\u7ea2.exp3.json", "id": "effect.blush", "label": "Blush toggle" }
+  ],
+  "safe_default_actions": [],
+  "initial_actions": [],
+  "renderer": {
+    "scale": 1.46,
+    "bottom_inset": 32,
+    "halo": { "enabled": false },
+    "fixed_parameters": [
+      { "parameter_id": "Param13", "value": 0 }
+    ],
+    "fixed_parts": [
+      { "part_id": "Part157", "opacity": 0 }
+    ],
+    "activity_actions": {
+      "idle": { "add": [], "suppress": [] },
+      "thinking": { "add": [], "suppress": [] },
+      "cli": { "add": [], "suppress": [] },
+      "skill": { "add": [], "suppress": [] },
+      "tool": { "add": [], "suppress": [] },
+      "waiting": { "add": [], "suppress": [] },
+      "error": { "add": [], "suppress": [] }
+    },
+    "speech_motion": {
+      "targets": [
+        { "parameter_id": "ChestX_Global", "idle_gain": 0.20, "speech_gain": 1.35, "frequency": 0.38, "phase": 0.0 },
+        { "parameter_id": "HipX_Global", "idle_gain": -0.16, "speech_gain": -1.10, "frequency": 0.38, "phase": 0.0 },
+        { "parameter_id": "ShoulderZ_Global", "idle_gain": 0.08, "speech_gain": 0.56, "frequency": 0.76, "phase": 1.4 }
+      ],
+      "mouth": {
+        "primary_parameter_id": "ParamMouthOpenY",
+        "secondary_parameter_id": "ParamMouthOpenY2",
+        "jaw_parameter_id": "JawOpen",
+        "base_open": 0.02,
+        "mouth_gain": 0.44,
+        "secondary_gain": 0.50,
+        "jaw_gain": 0.76,
+        "attack": 0.30,
+        "release": 0.12
+      },
+      "eyelids": {
+        "left_parameter_id": "ParamEyeLOpen",
+        "right_parameter_id": "ParamEyeROpen",
+        "idle_open_min": 0.34,
+        "idle_open_max": 0.50,
+        "idle_frequency": 0.20,
+        "speech_open": 0.98,
+        "wake_gain": 1.45,
+        "attack": 0.42,
+        "release": 0.08,
+        "talking_wake_floor": 0.68
+      }
+    }
+  }
+}

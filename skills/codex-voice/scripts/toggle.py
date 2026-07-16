@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -46,6 +48,16 @@ def watcher_pid_path(voice_root: Path) -> Path:
     return voice_root / "watcher.pid"
 
 
+def watcher_unit_name(voice_root: Path) -> str:
+    digest = hashlib.sha256(str(voice_root.resolve()).encode("utf-8")).hexdigest()[:12]
+    return f"codex-voice-watcher-{digest}"
+
+
+def orb_unit_name(voice_root: Path) -> str:
+    digest = hashlib.sha256(str((voice_root / "orb").resolve()).encode("utf-8")).hexdigest()[:12]
+    return f"codex-strand-orb-{digest}"
+
+
 def watcher_pid(voice_root: Path) -> int | None:
     try:
         return int(watcher_pid_path(voice_root).read_text(encoding="utf-8").strip())
@@ -55,9 +67,7 @@ def watcher_pid(voice_root: Path) -> int | None:
 
 def watcher_is_running(voice_root: Path) -> bool:
     pid = watcher_pid(voice_root)
-    if pid is None:
-        return False
-    if os.name == "nt":
+    if pid is not None and os.name == "nt":
         try:
             result = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
@@ -68,13 +78,41 @@ def watcher_is_running(voice_root: Path) -> bool:
             return str(pid) in result.stdout
         except OSError:
             return False
-    try:
-        os.kill(pid, 0)
-    except PermissionError:
+    pid_running = False
+    if pid is not None:
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            pid_running = True
+        except OSError:
+            pid_running = False
+        else:
+            pid_running = True
+        if pid_running and os.name != "nt":
+            # A stale marker can point at an unrelated process (PID 1/3 are
+            # common after a runtime restart).  Only accept a process whose
+            # command line owns this exact project watcher.
+            try:
+                command_line = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace"
+                )
+            except OSError:
+                command_line = ""
+            expected_root = str(voice_root.resolve())
+            if "watcher.py" not in command_line or expected_root not in command_line:
+                pid_running = False
+    if pid_running:
         return True
-    except OSError:
-        return False
-    return True
+    systemctl = shutil.which("systemctl")
+    if os.name != "nt" and systemctl and os.environ.get("XDG_RUNTIME_DIR"):
+        result = subprocess.run(
+            [systemctl, "--user", "is-active", "--quiet", f"{watcher_unit_name(voice_root)}.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return result.returncode == 0
+    return False
 
 
 def orb_pid(voice_root: Path) -> int | None:
@@ -86,9 +124,7 @@ def orb_pid(voice_root: Path) -> int | None:
 
 def orb_is_running(voice_root: Path) -> bool:
     pid = orb_pid(voice_root)
-    if pid is None:
-        return False
-    if os.name == "nt":
+    if pid is not None and os.name == "nt":
         try:
             result = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
@@ -99,19 +135,36 @@ def orb_is_running(voice_root: Path) -> bool:
             return str(pid) in result.stdout
         except OSError:
             return False
-    try:
-        os.kill(pid, 0)
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    if pid is not None:
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            return True
+        except OSError:
+            pass
+        else:
+            return True
+    systemctl = shutil.which("systemctl")
+    if os.name != "nt" and systemctl and os.environ.get("XDG_RUNTIME_DIR"):
+        result = subprocess.run(
+            [systemctl, "--user", "is-active", "--quiet", f"{orb_unit_name(voice_root)}.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return result.returncode == 0
+    return False
 
 
 def run_orb_script(voice_root: Path, name: str) -> None:
+    if os.name != "nt" and name.endswith(".ps1"):
+        name = f"{name[:-4]}.sh"
     script = voice_root / "orb" / name
     if not script.is_file():
         raise FileNotFoundError(script)
+    if os.name != "nt":
+        subprocess.run([str(script)], cwd=str(voice_root), check=True)
+        return
     subprocess.run(
         [
             "powershell.exe",
@@ -146,6 +199,28 @@ def start_watcher(voice_root: Path) -> None:
     ]
 
     if os.name != "nt":
+        systemd_run = shutil.which("systemd-run")
+        if systemd_run and os.environ.get("XDG_RUNTIME_DIR"):
+            watcher_log = voice_root / "watcher.log"
+            unit = watcher_unit_name(voice_root)
+            command = [
+                systemd_run,
+                "--user",
+                f"--unit={unit}",
+                "--collect",
+                "--quiet",
+                f"--working-directory={project_root}",
+                f"--property=StandardOutput=append:{watcher_log}",
+                f"--property=StandardError=append:{watcher_log}",
+                sys.executable,
+                *arguments,
+            ]
+            try:
+                result = subprocess.run(command, check=False)
+                if result.returncode == 0:
+                    return
+            except OSError:
+                pass
         try:
             process = subprocess.Popen(
                 [sys.executable, *arguments],
@@ -186,6 +261,14 @@ def start_watcher(voice_root: Path) -> None:
 
 
 def stop_watcher(voice_root: Path) -> None:
+    systemctl = shutil.which("systemctl")
+    if os.name != "nt" and systemctl and os.environ.get("XDG_RUNTIME_DIR"):
+        subprocess.run(
+            [systemctl, "--user", "stop", f"{watcher_unit_name(voice_root)}.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
     pid = watcher_pid(voice_root)
     if pid is None:
         return
@@ -249,6 +332,7 @@ def main() -> int:
             "orb-on",
             "orb-off",
             "orb-status",
+            "runtime-restart",
             "status",
         ),
     )
@@ -413,6 +497,18 @@ def main() -> int:
         print(
             f"Codex Strand Orb: {'on' if enabled else 'off'} "
             f"({voice_root}; window: {'running' if orb_is_running(voice_root) else 'stopped'})"
+        )
+        return 0
+
+    if args.operation == "runtime-restart":
+        restart_watcher(voice_root)
+        orb_marker = voice_root / "orb.enabled"
+        if marker_enabled(orb_marker):
+            run_orb_script(voice_root, "stop_orb.ps1")
+            run_orb_script(voice_root, "start_orb.ps1")
+        print(
+            f"Codex project presence runtime restarted ({voice_root}; "
+            f"Orb: {'on' if marker_enabled(orb_marker) else 'off'})"
         )
         return 0
 

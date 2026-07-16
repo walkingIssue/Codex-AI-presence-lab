@@ -298,6 +298,19 @@ class Inbox:
                 ).fetchone()
         return row is not None
 
+    def pending_messages(self) -> list[dict[str, object]]:
+        """Return locally queued durable messages for adapter reconciliation."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM messages
+                WHERE status IN ('queued', 'retry') AND available_at <= ?
+                ORDER BY id ASC
+                """,
+                (now_seconds(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def complete(self, event_id: str) -> None:
         with self.connection() as connection:
             connection.execute(

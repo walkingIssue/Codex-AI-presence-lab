@@ -3,7 +3,12 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { avatarStateForWindow, routeWindowKeys, windowDescriptors } = require("./presence_windows.cjs");
+const {
+  avatarStateForWindow,
+  profileCuration,
+  routeWindowKeys,
+  windowDescriptors,
+} = require("./presence_windows.cjs");
 
 test("materializes one avatar window per bound session", () => {
   const descriptors = windowDescriptors({
@@ -22,6 +27,55 @@ test("materializes one avatar window per bound session", () => {
     { sessionId: "session-luna", profileId: "luna", avatarId: "higan-live2d" },
     { sessionId: "session-sol", profileId: "sol", avatarId: "builtin" },
   ]);
+});
+
+test("materializes only bindings enabled by the owning project session registry", () => {
+  const document = {
+    schema: "codex-ai-presence/profiles/v0.1",
+    project_profile_id: "codex",
+    profiles: { codex: { avatar_id: "higan-live2d" } },
+    sessions: {
+      "session-local": { profile_id: "codex" },
+      "session-foreign": { profile_id: "codex" },
+    },
+  };
+  const descriptors = windowDescriptors(document, "builtin", new Set(["session-local"]));
+  assert.deepEqual(descriptors.map((descriptor) => descriptor.key), ["session:session-local|profile:codex"]);
+  assert.deepEqual(windowDescriptors(document, "builtin", new Set()), []);
+});
+
+test("uses the project profile for one enabled session when no explicit binding exists", () => {
+  const descriptors = windowDescriptors({
+    schema: "codex-ai-presence/profiles/v0.1",
+    project_profile_id: "codex",
+    profiles: { codex: { avatar_id: "higan-live2d" } },
+    sessions: {},
+  }, "builtin", new Set(["session-local"]));
+  assert.deepEqual(descriptors, [{
+    key: "session:session-local|profile:codex",
+    sessionId: "session-local",
+    profileId: "codex",
+    avatarId: "higan-live2d",
+  }]);
+});
+
+test("carries validated child curation into only its bound window descriptor", () => {
+  const curation = {
+    initial_actions: ["eyes.dazed", "pose.sweater-default"],
+    activity_actions: {
+      idle: { add: [], suppress: [] },
+      thinking: { add: ["eyes.dazed"], suppress: [] },
+    },
+  };
+  const [descriptor] = windowDescriptors({
+    schema: "codex-ai-presence/profiles/v0.1",
+    project_profile_id: "codex",
+    profiles: { codex: { avatar_id: "higan-live2d", curation } },
+    sessions: { sarah: { profile_id: "codex" } },
+  });
+  assert.deepEqual(descriptor.curation, curation);
+  assert.equal(profileCuration({ curation: { initial_actions: ["../../model.json"] } }), null);
+  assert.equal(profileCuration({ curation: { fixed_parameters: [] } }), null);
 });
 
 test("routes session activity and unscoped speech audio independently", () => {

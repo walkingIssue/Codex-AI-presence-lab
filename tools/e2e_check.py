@@ -22,12 +22,17 @@ REQUIRED_FILES = (
     "scripts/cli_adapter.py",
     "scripts/codex_override.py",
     "scripts/tui_bridge.py",
+    "scripts/launch_codex.py",
+    "scripts/launch_codex.sh",
+    "scripts/codex-presence.sh",
+    "scripts/tui_kokoro_worker.py",
     "scripts/setup.py",
     "scripts/session_scope.py",
     "scripts/speak.py",
     "scripts/toggle.py",
     "scripts/uninstall.py",
     "scripts/watcher.py",
+    "scripts/global_arbiter.py",
     "scripts/presence_service.py",
     "scripts/profiles.py",
     "scripts/clipboard.py",
@@ -76,11 +81,40 @@ def main() -> int:
         raise SystemExit("Orb window resize configuration is incomplete")
     if "orb-resize-start" not in orb_main or "orb-resize" not in orb_preload:
         raise SystemExit("Orb resize gesture bridge is incomplete")
+    if "focusRendererForInteraction" not in orb_main or "setIgnoreMouseEvents(false" not in orb_main:
+        raise SystemExit("Orb Linux interaction focus bridge is incomplete")
+    if "function interactionRenderers()" not in orb_main or "function applyShortcutModes(renderer)" not in orb_main:
+        raise SystemExit("Orb multi-renderer interaction bridge is incomplete")
+    if (
+        "WAYLAND_INTERACTION_SELECTION" not in orb_main
+        or "function transitionInteractionMachine" not in orb_main
+        or "selected_key: interactionMachine.selectedKey" not in orb_main
+        or "skipTaskbar: !WAYLAND_INTERACTION_SELECTION" not in orb_main
+    ):
+        raise SystemExit("Orb Wayland compositor-focus selection state machine is incomplete")
+    orb_styles = (skill / "scripts" / "orb" / "styles.css").read_text(encoding="utf-8")
+    if "body.move-mode::before" not in orb_styles or "body.resize-mode::before" not in orb_styles:
+        raise SystemExit("Orb interaction mode border is incomplete")
     if "activeAvatar?.stateSupported" not in orb_main or 'send("window-resize", { width, height });' not in orb_main:
         raise SystemExit("Avatar-local resize contract is incomplete")
+    if 'webContents.send("profile-curation"' not in orb_main or "onProfileCuration" not in orb_preload:
+        raise SystemExit("Session-profile curation IPC is incomplete")
+    # In a source checkout the canonical package is overlaid into the skill by
+    # project_release.py. A projected release contains only the bundled copy.
+    live2d_root = source / "live2d-avatar-runtime"
+    if not live2d_root.is_dir():
+        live2d_root = skill / "live2d-avatar-runtime"
+    live2d_renderer = (
+        live2d_root / "src" / "live2d_avatar" / "assets" / "renderer-template" / "renderer.js"
+    ).read_text(encoding="utf-8")
+    if "mergeActivityActions" not in live2d_renderer or "applyProfileCuration" not in live2d_renderer:
+        raise SystemExit("Live2D child-curation cascade is incomplete")
     skill_text = (skill / "SKILL.md").read_text(encoding="utf-8")
     if "name: codex-voice" not in skill_text or "configure.py" not in skill_text:
         raise SystemExit("Skill metadata/configuration instructions are incomplete")
+    setup_text = (skill / "scripts" / "setup.py").read_text(encoding="utf-8")
+    if '"--refresh"' not in setup_text or "install_managed_runtime_files" not in setup_text:
+        raise SystemExit("Managed runtime refresh seam is incomplete")
 
     sys.path.insert(0, str(skill / "scripts"))
     from activity import classify_activity
@@ -90,6 +124,7 @@ def main() -> int:
         install_profile_script,
         install_runtime_manifest,
         install_tui_bridge,
+        install_tui_runtime,
     )
     from tui_bridge import MockKokoroWorker, VoiceChunkRouter
     from uninstall import read_runtime_manifest
@@ -100,6 +135,9 @@ def main() -> int:
         ".codex-voice/cli_adapter.py",
         "~/.codex/codex-voice-override.json",
         ".codex-voice/tui_bridge.py",
+        ".codex-voice/launch_codex.py",
+        ".codex-voice/launch_codex.sh",
+        ".codex-voice/tui_kokoro_worker.py",
         ".codex-voice/presence_service.py",
         ".codex-voice/presence-profiles.json",
         ".codex-voice/orb/",
@@ -119,8 +157,12 @@ def main() -> int:
     for record, expected in activity_cases:
         if classify_activity(record) != expected:
             raise SystemExit(f"Activity classification failed: {record!r}")
-    if classify_activity({"type": "response_item", "payload": {"type": "reasoning"}}) is not None:
-        raise SystemExit("Hidden reasoning content was incorrectly exposed as an activity event")
+    reasoning_record = {
+        "type": "response_item",
+        "payload": {"type": "reasoning", "text": "hidden reasoning must not cross the bridge"},
+    }
+    if classify_activity(reasoning_record) != "thinking":
+        raise SystemExit("Reasoning activity metadata was not reduced to the category-only thinking state")
     worker = MockKokoroWorker()
     router = VoiceChunkRouter(worker)
     if not router.handle({"type": "voice/chunk", "stream_id": "e2e", "text": "visible", "sequence": 1}):
@@ -147,6 +189,7 @@ def main() -> int:
             raise SystemExit("Setup upgrade duplicated existing runtime ignore patterns")
         install_activity_script(voice_root)
         install_tui_bridge(voice_root)
+        install_tui_runtime(voice_root)
         install_profile_script(voice_root)
         install_runtime_manifest(voice_root)
         if not (voice_root / "activity.py").is_file():
@@ -155,6 +198,11 @@ def main() -> int:
             raise SystemExit("Setup did not install the shared CLI process adapter into the project runtime")
         if not (voice_root / "tui_bridge.py").is_file():
             raise SystemExit("Setup did not install the TUI/server bridge into the project runtime")
+        if not all(
+            (voice_root / name).is_file()
+            for name in ("launch_codex.py", "launch_codex.sh", "tui_kokoro_worker.py")
+        ):
+            raise SystemExit("Setup did not install the stock TUI launcher runtime")
         if not (voice_root / "profiles.py").is_file() or not (voice_root / "configuration.py").is_file():
             raise SystemExit("Setup did not install the profile resolver into the project runtime")
         manifest_entries = read_runtime_manifest(voice_root)
@@ -162,10 +210,28 @@ def main() -> int:
             raise SystemExit("Setup did not install a readable runtime manifest")
         if ".codex-voice/tui_bridge.py" not in manifest_entries:
             raise SystemExit("Setup did not register the TUI/server bridge in the runtime manifest")
+        for entry in (
+            ".codex-voice/launch_codex.py",
+            ".codex-voice/launch_codex.sh",
+            ".codex-voice/tui_kokoro_worker.py",
+        ):
+            if entry not in manifest_entries:
+                raise SystemExit(f"Setup did not register {entry} in the runtime manifest")
         for path in (skill / "scripts").glob("*.py"):
             shutil.copy2(path, scripts / path.name)
         (voice_root / "sessions.json").write_text(
-            json.dumps({"version": 1, "mode": "session", "sessions": {}}),
+            json.dumps(
+                {
+                    "version": 1,
+                    "mode": "session",
+                    "sessions": {
+                        "session-luna": {
+                            "enabled": True,
+                            "project_root": str(project.resolve()),
+                        }
+                    },
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -232,9 +298,17 @@ def main() -> int:
                 "af_heart",
                 "--speed",
                 "1.2",
+                "--curation-json",
+                '{"initial_actions":["pose.sweater-default"],"activity_actions":{"idle":{"suppress":[]}}}',
             ],
             project,
         )
+        profile_document = json.loads((voice_root / "presence-profiles.json").read_text(encoding="utf-8"))
+        curation = profile_document["profiles"]["luna"]["curation"]
+        if curation["initial_actions"] != ["pose.sweater-default"]:
+            raise SystemExit("Session profile did not persist its semantic curation override")
+        if curation["activity_actions"]["idle"]["suppress"] != []:
+            raise SystemExit("Session profile did not preserve an explicit empty child override")
         run(
             [
                 sys.executable,
@@ -264,6 +338,28 @@ def main() -> int:
         help_result = run([sys.executable, str(skill / "scripts" / "setup.py"), "--help"], project)
         if "--codex-override" not in help_result.stdout:
             raise SystemExit("Setup did not expose the install-time Codex override setting")
+
+        refresh_project = root / "refresh-project"
+        refresh_voice = refresh_project / ".codex-voice"
+        refresh_voice.mkdir(parents=True)
+        (refresh_voice / "provider").write_text("openvino\n", encoding="utf-8")
+        (refresh_voice / "watcher.py").write_text("obsolete\n", encoding="utf-8")
+        run(
+            [
+                sys.executable,
+                str(skill / "scripts" / "setup.py"),
+                "--project-root",
+                str(refresh_project),
+                "--refresh",
+                "--no-orb",
+                "--force",
+            ],
+            refresh_project,
+        )
+        if (refresh_voice / "watcher.py").exists():
+            raise SystemExit("Runtime refresh retained an obsolete managed watcher copy")
+        if (refresh_voice / "provider").read_text(encoding="utf-8").strip() != "openvino":
+            raise SystemExit("Runtime refresh changed the selected provider")
 
         hooks_dir = project / ".codex" / "hooks"
         hooks_dir.mkdir(parents=True)

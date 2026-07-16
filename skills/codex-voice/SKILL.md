@@ -1,12 +1,15 @@
 ---
 name: codex-voice
-description: Set up, uninstall, and control project-local Kokoro voice output, the optional WebGL Strand Orb, and experimental custom avatar renderers for Codex, with full voice, speed, volume, commentary-volume, playback, scope, progress, and provider configuration. Use when the user asks to enable, disable, configure, install, clean up, troubleshoot, speak Codex responses aloud, or define a custom presence renderer, including CPU, NVIDIA CUDA, Intel OpenVINO, or Intel DirectML provider selection.
+description: Set up, uninstall, and control project-local Kokoro voice output, the optional WebGL Strand Orb, and integrated Live2D/Cubism avatar renderers for Codex, with full voice, speed, volume, commentary-volume, playback, scope, progress, provider, model-profile, and visual-state configuration. Use when the user asks to enable, disable, configure, install, clean up, troubleshoot, speak Codex responses aloud, import or bind a local Live2D model, or define a custom presence renderer, including CPU, NVIDIA CUDA, Intel OpenVINO, or Intel DirectML provider selection.
 ---
 
 # Codex AI Presence
 
 Use the bundled scripts from the active project directory. The setup is
-project-local and does not modify other Python environments.
+project-local and does not modify other Python environments. In a development
+checkout, `skills/codex-voice/` is source; `.codex-voice/` is generated runtime
+state and `$CODEX_HOME/skills/codex-voice/` is an installed projection. Never
+patch generated runtime copies as the source of truth.
 
 ## Set up
 
@@ -60,6 +63,27 @@ INT8 model with the GPU device selected at session creation. The DirectML path
 uses a separate `.dml-venv` and a generated local graph patch.
 Do not describe the DirectML patch as an upstream Kokoro contribution yet.
 
+### Refresh an existing installation
+
+Use the managed refresh when the skill source changed but models, virtual
+environments, provider selection, profiles, avatar curation, and geometry must
+be preserved:
+
+```sh
+python /path/to/latest/codex-voice/scripts/setup.py --project-root . --refresh --force
+python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" runtime-restart
+```
+
+`--refresh` replaces only managed hooks, scripts, launchers, the Orb package,
+and the runtime manifest. It reuses Orb dependencies when package manifests
+are unchanged and removes known obsolete managed files from older layouts. It
+does not download models, rebuild environments, change provider/settings,
+copy another project's profiles or ledgers, or create a new global worker.
+Run it once per project runtime that should receive the revision. Project the
+same canonical skill revision into `$CODEX_HOME/skills/codex-voice/` before
+restarting watchers, because watcher and global-arbiter code is loaded from
+the installed skill.
+
 ## Uninstall and clean up
 
 To remove the project-local integration after a failed or superseded install, run:
@@ -84,14 +108,75 @@ boundary, so newly added files inside it are cleaned up automatically.
 
 ## Unified presence runtime
 
-The project-local watcher is an adapter, not a second presentation owner. It
-hands sanitized activity and visible-output envelopes to
-`.codex-voice/presence_service.py`, which owns the local lifecycle boundary
-and delegates all playback to the existing single inbox/playback arbiter.
+The project-local watcher is an adapter, not a presentation or playback owner.
+It hands sanitized activity and visible-output envelopes to the user-level
+global arbiter in `scripts/global_arbiter.py`. That arbiter owns one
+serialized attention queue, one spoken-session owner, one session-transition announcement
+policy, and one warm Kokoro worker for every connected project and session.
 Renderer-specific code stays behind the existing activity and avatar-state
 bridges. Future Codex app-server, Agent Client Protocol (ACP), and other host
-adapters should all target this same service instead of introducing another
+adapters should all target this same arbiter instead of introducing another
 speech or presentation owner.
+
+Each project Orb still has its own isolated localhost UDP endpoint. That is a
+renderer delivery address only; it does not create another worker. Every
+speech request carries its session/profile route and target Orb port through
+the global arbiter.
+
+The routing identity is the full tuple `(project_root, orb_port, session_id,
+profile_id, route_key)`. Voice output, coarse activity, and semantic avatar
+state must resolve from the same owning project and exact composite route.
+Never repair a route mismatch by adding the foreign session to a second
+project's `presence-profiles.json`; that creates a duplicate visual while
+speech remains attached to the original project's Orb endpoint.
+
+The first enabled watcher starts the user-level arbiter daemon under the
+active user's Codex voice state directory; later watchers connect to its
+localhost socket. Do not start `speak.py --server` manually and do not create
+a project-specific Kokoro worker. Stopping one project watcher deliberately
+leaves the global worker available to the remaining sessions.
+
+## Integrated Live2D runtime
+
+Live2D model import, semantic profiles, renderer bundle materialization, state
+publication, project lifecycle, and bounded context inspection are part of this
+skill. The runtime package is bundled under `live2d-avatar-runtime/` in a
+project checkout and in projected skill releases; it is not a separately
+installed skill or global Python dependency.
+
+Use the unified launcher from the active project or installed skill:
+
+```sh
+python skills/codex-voice/scripts/live2d-avatar.py project doctor --project . --json
+python skills/codex-voice/scripts/live2d-avatar.py model import <zip-or-folder> --id <model-id>
+python skills/codex-voice/scripts/live2d-avatar.py model profile scaffold <model-id> --output <user-owned-profile.json>
+python skills/codex-voice/scripts/live2d-avatar.py project bind --project . --model <model-id> --profile <user-owned-profile.json>
+python skills/codex-voice/scripts/live2d-avatar.py project publish --project .
+python skills/codex-voice/scripts/live2d-avatar.py project voice-status --project . --json
+```
+
+On Windows use `scripts/live2d-avatar.ps1`; on Fedora/Linux the equivalent
+`scripts/live2d-avatar.sh` is available. The launcher resolves the bundled
+package in both a source checkout and a projected skill release. Read
+[`references/live2d-manifest-and-state.md`](references/live2d-manifest-and-state.md)
+before changing model profiles or lifecycle behavior.
+
+The Live2D runtime owns imported model copies, generated manifests, neutral
+model-level curation, project bindings, and materialized renderer bundles. Codex Voice owns
+the Orb, TTS, generic semantic state writer, and state delivery. Only semantic
+action IDs cross that boundary; compiled Cubism operations, model paths,
+expression filenames, hotkeys, textures, and raw controls remain renderer-local.
+The runtime keeps the historical `live2d-avatar-controls` source identifier in
+state envelopes for compatibility; it does not denote a second installed skill.
+
+For a reviewed model, `project bind` is the visual integration path: it applies
+the profile, materializes the bundled Pixi/Cubism renderer, installs the bundle
+through Codex Voice's validated avatar installer, selects it, and reports when
+the Orb must restart. Use `state set`, `state enable`, or `state disable` with
+semantic IDs, then `project publish` to apply the complete desired toggle set.
+`project uninstall` removes only the Live2D project boundary and bundles owned
+by it; the unified voice uninstaller preserves the global model registry,
+user-owned profile drafts, and unmarked avatar bundles.
 
 ## Codex TUI/server bridge (experimental)
 
@@ -109,12 +194,37 @@ before the inference worker is ready:
 python .codex-voice/tui_bridge.py --server-command "mock-server --stdio"
 ```
 
-Pass `--worker-command` when the JSONL Kokoro worker is available. The worker
-command is parsed without a shell and receives one normalized JSON object per
-line. This is a custom-client/TUI adapter path; the packaged Codex UI is not
-automatically redirected through it. The shared CLI boundary keeps the Linux
-direct-exec path intact and handles quoted Windows paths plus npm `.cmd`/`.bat`
-shims for both TUI and App Server delivery.
+Pass `--worker-command` only for a deliberately custom bridge or transport
+test. Its JSONL command is parsed without a shell and receives one normalized
+event per line. The shared CLI boundary preserves Linux direct execution and
+handles quoted Windows paths plus npm `.cmd`/`.bat` shims for TUI and App
+Server delivery.
+
+The stock launcher instead commits completed visible output to the project
+adapter inbox, where the global arbiter sends it through the one already-warm
+Kokoro worker shared by all sessions and projects. For the stock Fedora TUI,
+use the installed launcher:
+
+```sh
+.codex-voice/launch_codex.sh
+```
+
+It starts a local app-server WebSocket, launches the normal Codex TUI with
+`--remote`, forwards the protocol unchanged, and routes only visible
+assistant-message deltas to the project-local adapter inbox. The rollout
+watcher forwards that envelope to the global arbiter; it does not start a
+Kokoro process of its own.
+
+The launcher may also be bound to the global `codex` command. It uses the
+working directory (or `CODEX_PRESENCE_PROJECT_ROOT`) to select the project and
+passes that project’s `.codex-voice` directory (or
+`CODEX_PRESENCE_VOICE_ROOT`) explicitly. The wrapper does not need to be
+copied into each project, but each project that should use presence must have
+its own configured `.codex-voice` runtime and managed `.codex/hooks/speak.py`.
+On Linux, direct Codex administration and `app-server` commands bypass that
+wrapper and go to the real Codex binary. On Windows, the opt-in user-wide shim
+does the converse: it proxies only `app-server` through the TUI adapter while
+ordinary Codex commands remain direct.
 
 ## Configuration
 
@@ -173,9 +283,11 @@ paths to the renderer.
 | `waiting` | Dim blue waiting halo |
 | `error` | Short red warning pulse |
 
-Codex rollout metadata automatically drives `thinking`, `tool`, `cli`, and
-`idle`. A host adapter or skill can emit an explicit category through the
-project-local bridge:
+Codex rollout metadata automatically drives `thinking`, `tool`, `skill`,
+`cli`, and `idle`. Current rollout records use `response_item/reasoning` for
+thinking, tool-call names for tool/skill/CLI classification, and completion
+events for idle. Waiting and error remain available for explicit host events
+or adapter calls; they are not inferred from arbitrary tool output:
 
 MCP invocation, web search, and external function/tool work use `tool`; there
 is no provider-specific `mcp-invocation` renderer state. `speaking` is a
@@ -210,8 +322,8 @@ or arbitrary host APIs. Renderer code runs in the isolated Electron page with
 context isolation and Node integration disabled.
 
 An avatar may also advertise `avatar-state-v1` and include a sibling
-`avatar-capabilities.json`. A separate avatar-control skill can then write a
-complete high-level action set through the generic managed writer:
+`avatar-capabilities.json`. The integrated Live2D path writes a complete
+high-level action set through the generic managed writer:
 
 ```powershell
 py .codex-voice/avatar_state.py write --project-root . `
@@ -239,6 +351,24 @@ same composite session/profile route used by Presence Service, persisted in
 `avatar-states.json`, and delivered only to that exact avatar window. An empty
 action list resets the target avatar, and revisions are monotonic per route.
 
+Visual curation follows a parent-to-child cascade. The materialized model
+bundle is the parent and declares only reviewed neutral initial/activity
+behavior. A bound presence profile may declare semantic `curation` overrides;
+its `initial_actions` replaces the parent initial set, and each explicitly
+present `add` or `suppress` array replaces that field for the named activity.
+Empty arrays deliberately clear inherited behavior. The exact routed avatar
+state is the leaf and remains authoritative for the session's persistent pose
+and accessories. Activity overlays compose around that leaf and must not erase
+it unless the child profile explicitly asks for suppression.
+
+Avatar state is runtime-local presentation state. Do not append its status,
+active-action list, available-action list, or acceptance diagnostics to normal
+turn context or to the end of user turns. Use `avatar_state.py status` or
+`avatar_state.py sync` only when explicitly requested, when a host/classifier
+asks for it, or while diagnosing the bridge. State remains fully controllable
+through the `write` command; this policy only removes the automatic context
+noise.
+
 Install and select a bundle without replacing the built-in renderer:
 
 ```powershell
@@ -264,19 +394,37 @@ invalid. Skill uninstall removes the managed runtime but leaves
 Profiles bind a high-level avatar identity and Kokoro voice/speed/mode to a
 session. Presence Service resolves the profile before enqueueing speech, the
 durable inbox snapshots those routing fields, and the existing single
-PlaybackArbiter sends them to the existing warm Kokoro worker per request.
-Profiles do not create a second worker or put identity data into spoken text.
-The provider remains project-wide because it selects the worker/model runtime.
+global PlaybackArbiter sends them to the one existing warm Kokoro worker per
+request. Profiles do not create another worker or put identity data into
+spoken text. Provider/model selection belongs to the global worker owner, not
+to an individual session.
 
 Create profiles and bind sessions with the managed project-local command:
 
 ```powershell
 py .codex-voice/profiles.py --project-root . set sol --avatar-id builtin --voice af_heart --speed 1.0 --mode stream
 py .codex-voice/profiles.py --project-root . set luna --avatar-id higan-live2d --voice bf_isabella --speed 1.2 --mode stream
+py .codex-voice/profiles.py --project-root . set luna --curation-json '{"initial_actions":["eyes.dazed","pose.sweater-default"],"activity_actions":{"idle":{"add":[],"suppress":[]},"thinking":{"add":["eyes.dazed"],"suppress":[]}}}'
 py .codex-voice/profiles.py --project-root . bind $env:CODEX_THREAD_ID luna
 py .codex-voice/profiles.py --project-root . default sol
 py .codex-voice/profiles.py --project-root . list
 ```
+
+Bind in this order:
+
+1. Change to the project that owns the Codex session and run `session-on`.
+2. Create/update the profile in that same project's `.codex-voice` runtime.
+3. Bind the current `CODEX_THREAD_ID` with an explicit `--project-root`.
+4. Run `profiles.py resolve --session-id <id>` and verify `avatar_id`,
+   `profile_id`, and `route_key` before publishing semantic state.
+5. Publish Live2D state from the same project, then run `runtime-restart`.
+
+In session scope, `profiles.py bind` rejects an ID that is not enabled in the
+target project or whose session registry names a different project root.
+Do not copy `presence-profiles.json`, `sessions.json`, `avatar-state*.json`, or
+`.codex-live2d/avatar-state-revisions.json` between projects. To move a live
+session, unbind it from the old project, enable and bind it in the owning
+project, and republish its desired action set to the new exact route.
 
 The canonical file is `.codex-voice/presence-profiles.json`. Resolution order
 is an explicit profile requested at the Presence boundary, then the session
@@ -285,12 +433,22 @@ binding, then `project_profile_id`, then legacy project voice/avatar defaults.
 separate fields. The spoken-attention owner is the composite
 `session:<id>|profile:<id>` route.
 
-Restart the Orb after adding or removing bindings. It creates one transparent
-window per bound session in one Electron process. Session-scoped activity goes
-to that session's avatar; unscoped Kokoro amplitude/state packets go only to
-the most recent `voice-output` owner. Holding `Ctrl+Alt`/`Cmd+Alt` and the right
-mouse button on any profile avatar targets voice input to that avatar's bound
-session.
+Presence-profile `curation` accepts semantic action IDs only. It supports
+`initial_actions` and per-state `activity_actions` rules for `idle`,
+`thinking`, `tool`, `skill`, `cli`, `waiting`, and `error`. Raw Cubism
+parameters, expression paths, fixed parts, and arbitrary renderer controls are
+rejected. Use `--clear-curation` to remove a child override and inherit the
+model bundle again.
+
+Restart the project runtime after adding or removing bindings. It creates one
+transparent window per explicitly bound session that is also enabled by that
+project's session registry. Inactive or foreign bindings fail closed and
+cannot create a fallback/default window. If there are no explicit bindings,
+one enabled session may use the project profile as a legacy single-window
+fallback. Session-scoped activity goes to that session's avatar; unscoped
+Kokoro amplitude/state packets go only to the most recent exact
+`voice-output` owner. Holding `Ctrl+Alt`/`Cmd+Alt` and the right mouse button on
+any profile avatar targets voice input to that avatar's bound session.
 
 The host budgets animation callbacks before renderer scripts load: 60 FPS by
 default while idle, speaking, recording, applying avatar state, or interacting. Override with
@@ -319,6 +477,7 @@ python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" progress-on
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" progress-off
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" orb-on
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" orb-off
+python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" runtime-restart
 python "$HOME/.codex/skills/codex-voice/scripts/toggle.py" status
 ```
 
@@ -327,6 +486,37 @@ macOS and use the left mouse button to drag any rendered profile. Each
 session/profile window saves its own position inside the project-local
 `orb-position.json`; press `Escape` to cancel a move in progress. Voice input uses the
 separate right-button hold described below.
+
+For a more reliable gesture—especially when the transparent window is not
+focused—press `Ctrl+Alt+M` on Windows/Linux or `Cmd+Option+M` on macOS to
+toggle move mode, then drag with the left button. Press the same shortcut again
+to return to click-through mode. Press `Ctrl+Alt+Shift+K` (or
+`Cmd+Option+Shift+K`) to arm one resize operation, then drag the lower-right
+corner; resize mode exits automatically after the resize. On native Wayland,
+global shortcut support depends on the compositor's Global Shortcuts portal;
+the original hold-modifier gesture remains available as a fallback. On
+Fedora/Linux that fallback is guarded by the Linux platform gate: hold
+`Ctrl+Alt+Shift` while dragging the lower-right corner. Integrated Live2D
+renderers receive the same Linux platform flag and draw the resize border and
+corner affordance themselves, so the model page remains visually consistent
+with the host window. Entering either shortcut mode now focuses and raises the
+transparent window for the edit, shows an active border, and restores
+click-through behavior when the mode ends.
+
+The shortcut request targets one exact renderer window, including when that
+window belongs to another project-local Orb process. On a Wayland desktop,
+press `Super` to open the compositor overview and select the renderer first;
+that compositor focus drives an explicit `idle -> selected -> armed -> active
+-> idle` interaction state machine. The selected renderer remains the only
+eligible shortcut target until the operation completes, loses focus, or is
+cancelled. If no renderer is selected, the shortcut deliberately does nothing
+instead of falling back to the first window, stale hover, or compositor cursor
+coordinates. Wayland renderers are included in the desktop overview for this
+selection flow. X11, Windows, and macOS retain pointer targeting. The desktop
+shortcut owner forwards the command with its session/profile window key over
+the local Orb interaction channel and clears any previously armed renderer.
+This is independent of the voice/Kokoro arbiter and keeps resize and movement
+attached to one explicitly selected visual window.
 
 The Orb window is resizable from its native transparent surface. Hold
 `Ctrl+Alt+Shift` and drag from the lower-right corner to resize it; the gesture
@@ -337,8 +527,9 @@ with `avatar-state-v1` keep Electron zoom at `1` and fit their own canvas so
 Live2D and other high-resolution avatars do not become raster-scaled. Legacy
 custom renderers without that capability may still use host scaling.
 
-Report the resulting state briefly. The skill controls future responses; it
-does not speak the current response directly.
+The skill controls future responses; it does not speak the current response
+directly. Do not report model status unless the user explicitly asks for it or
+the operation failed and the diagnostic is needed to explain the failure.
 
 `session-on` registers the current `CODEX_THREAD_ID` in the project-local
 `.codex-voice/sessions.json` file. `session-off` removes only the current
@@ -362,10 +553,10 @@ user has chosen to allow microphone capture:
 
 ```powershell
 python "$HOME/.codex/skills/codex-voice/scripts/setup.py" --with-input
-py .codex-voice/voice_input.py settings --enabled on
-py .codex-voice/voice_input.py status
-py .codex-voice/voice_input.py settings --labels session-change --max-record-seconds 60 --lock-timeout-seconds 120
-py .codex-voice/voice_input.py settings --delivery-mode clipboard
+py .codex-voice/voice_input.py --voice-root .codex-voice settings --enabled on
+py .codex-voice/voice_input.py --voice-root .codex-voice status
+py .codex-voice/voice_input.py --voice-root .codex-voice settings --labels session-change --max-record-seconds 60 --lock-timeout-seconds 120
+py .codex-voice/voice_input.py --voice-root .codex-voice settings --delivery-mode clipboard
 ```
 
 While the Orb is speaking, hold `Ctrl+Alt` and press the right mouse button.

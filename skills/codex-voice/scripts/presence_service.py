@@ -129,7 +129,7 @@ class PresenceService:
         self.playback = playback
         self.adapter_name = _bounded_source(adapter_name)
         self.profiles = profile_registry or ProfileRegistry(self.project_root, self.voice_root)
-        self.emitter = ActivityEmitter()
+        self.emitter = ActivityEmitter(voice_root=self.voice_root)
         self._lock = threading.Lock()
         self._sequence = 0
         self._running = False
