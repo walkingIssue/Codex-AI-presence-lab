@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walkingissue.local/presence/override-patch-v0.2.schema.json",
+  "title": "Presence Runtime v0.2 Project or Session Override",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "profile_ref": {"type": ["string", "null"], "minLength": 1, "x-clearable": true},
+    "voice_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "speed": {"type": "number", "minimum": 0.25, "maximum": 4},
+    "playback_mode": {"enum": ["stream", "quality"]},
+    "volume": {"type": "integer", "minimum": 0, "maximum": 100},
+    "commentary_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "avatar_ref": {"type": ["string", "null"], "minLength": 1, "x-clearable": true},
+    "preset_ref": {"type": ["string", "null"], "minLength": 1, "x-clearable": true},
+    "progress_visible": {"type": "boolean"},
+    "renderer_visible": {"type": "boolean"},
+    "semantic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "actions": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "activity": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["object", "null"],
+            "x-clearable": true,
+            "additionalProperties": false,
+            "properties": {
+              "add": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+              "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  },
+  "not": {
+    "anyOf": [
+      {"required": ["provider"]},
+      {"required": ["microphone_permission"]},
+      {"required": ["binding_id"]},
+      {"required": ["route_key"]},
+      {"required": ["orb_port"]}
+    ]
+  }
+}

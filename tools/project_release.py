@@ -6,8 +6,17 @@ import argparse
 import shutil
 from pathlib import Path
 
+from canonical_projection import copy_canonical_tree
 
-IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
+IGNORE = shutil.ignore_patterns(
+    "__pycache__",
+    "*.pyc",
+    ".pytest_cache",
+    # Canonical runtime packages are projected explicitly below. A stale local
+    # copy beneath the skill must never win merely because it exists on disk.
+    "live2d-avatar-runtime",
+    "presence-runtime",
+)
 
 
 def main() -> int:
@@ -29,17 +38,26 @@ def main() -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source_skill, destination, ignore=IGNORE)
 
-    # The Live2D runtime is an internal package of the unified skill. Keep it
-    # beside the skill's scripts in projected releases so the launcher never
-    # depends on a separately installed global runtime or skill.
+    # Runtime implementations are canonical root packages. Project them into
+    # the installable skill and record every payload hash; do not maintain a
+    # second tracked implementation below skills/codex-voice.
     source_live2d = source_root / "live2d-avatar-runtime"
     destination_live2d = destination / "live2d-avatar-runtime"
-    if not source_live2d.is_dir():
-        raise SystemExit(f"Bundled Live2D runtime was not found: {source_live2d}")
-    # The projected skill may contain skill-specific metadata alongside an
-    # earlier runtime projection.  Overlay the canonical runtime so shared
-    # files always match the release source while preserving that metadata.
-    shutil.copytree(source_live2d, destination_live2d, ignore=IGNORE, dirs_exist_ok=True)
+    source_presence = source_root / "presence-runtime"
+    destination_presence = destination / "presence-runtime"
+    try:
+        live2d_projection = copy_canonical_tree(
+            source_live2d,
+            destination_live2d,
+            package="live2d-avatar-runtime",
+        )
+        presence_projection = copy_canonical_tree(
+            source_presence,
+            destination_presence,
+            package="presence-runtime",
+        )
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
 
     forbidden = []
     for path in output_root.rglob("*"):
@@ -54,6 +72,8 @@ def main() -> int:
     files = sum(1 for path in output_root.rglob("*") if path.is_file())
     print(f"Projected {files} files into {output_root}")
     print(f"Installable root: {destination}")
+    print(f"Live2D canonical digest: {live2d_projection['tree_digest']}")
+    print(f"Presence canonical digest: {presence_projection['tree_digest']}")
     return 0
 
 

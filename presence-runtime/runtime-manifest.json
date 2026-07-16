@@ -1,0 +1,162 @@
+{
+  "schema": "presence/runtime-manifest/v0.2",
+  "revision": 1,
+  "release_unit": "codex-voice",
+  "preserved_user_data": [
+    "$CODEX_HOME/presence/catalog/",
+    "$CODEX_HOME/presence/state.sqlite3",
+    "original avatar archives and profile/preset export files"
+  ],
+  "components": [
+    {
+      "id": "supervisor",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/runtime/", "$CODEX_HOME/bin/presence*"],
+      "dependencies": ["python-runtime", "state-store", "catalog"],
+      "dependents": ["adapter-registration", "kokoro-worker", "renderer-host", "stt-runtime"],
+      "preserved_data": ["state-store", "catalog"],
+      "removal": "Stop the runtime after active-source guard, then remove only manifest-owned runtime code and launchers."
+    },
+    {
+      "id": "python-runtime",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/.venv/"],
+      "dependencies": [],
+      "dependents": ["supervisor", "kokoro-worker", "stt-runtime"],
+      "preserved_data": [],
+      "removal": "Remove only the managed virtual environment after dependents stop."
+    },
+    {
+      "id": "state-store",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/state.sqlite3", "$CODEX_HOME/presence/state.sqlite3-wal", "$CODEX_HOME/presence/state.sqlite3-shm"],
+      "dependencies": [],
+      "dependents": ["supervisor", "adapter-registration", "speech-queue", "renderer-host", "migration-ledger"],
+      "preserved_data": ["project instances", "bindings", "overrides", "effective snapshots", "geometry", "queue", "migration ledger"],
+      "removal": "Preserve by default; remove only with --purge-state after active-source guard and backup/export checks."
+    },
+    {
+      "id": "catalog",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/catalog/"],
+      "dependencies": [],
+      "dependents": ["resolver", "renderer-host", "bindings"],
+      "preserved_data": ["avatar model packs", "profile revisions", "preset revisions"],
+      "removal": "Preserve by default; remove only with --purge-catalog after reference checks. Never remove original user archives."
+    },
+    {
+      "id": "resolver",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/runtime/presence_runtime/resolver.py", "$CODEX_HOME/presence/runtime/schemas/"],
+      "dependencies": ["catalog", "state-store"],
+      "dependents": ["speech-queue", "renderer-host", "public-cli"],
+      "preserved_data": ["last-known-good effective snapshots"],
+      "removal": "Removed with supervisor code; persisted snapshots remain unless --purge-state is explicit."
+    },
+    {
+      "id": "adapter-registration",
+      "scope": "project",
+      "owner": "presence-runtime",
+      "artifacts": ["project adapter diagnostics and rollout cursors", "$CODEX_HOME/presence/presence.pipe or presence.sock"],
+      "dependencies": ["supervisor", "state-store"],
+      "dependents": ["bindings", "speech-queue", "renderer-host"],
+      "preserved_data": ["dormant binding configuration"],
+      "removal": "Project unregister removes only that project's registration and managed adapter files; shared runtime and catalog remain."
+    },
+    {
+      "id": "bindings",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["state-store binding records"],
+      "dependencies": ["state-store", "catalog"],
+      "dependents": ["speech-queue", "renderer-host"],
+      "preserved_data": ["project defaults", "session overrides", "geometry", "last-known-good revisions"],
+      "removal": "Deleting a binding explicitly cancels its queued speech and releases catalog references; never reroute dependents."
+    },
+    {
+      "id": "kokoro-worker",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/models/", "$CODEX_HOME/presence/providers/", "$CODEX_HOME/presence/kokoro-worker.*"],
+      "dependencies": ["supervisor", "python-runtime"],
+      "dependents": ["speech-queue"],
+      "preserved_data": [],
+      "removal": "Stop one worker, then remove only managed provider/model assets after all active sources are gone."
+    },
+    {
+      "id": "speech-queue",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["state-store speech_queue and event_dedup records"],
+      "dependencies": ["state-store", "bindings", "resolver", "kokoro-worker"],
+      "dependents": ["renderer-host"],
+      "preserved_data": ["durable final utterances"],
+      "removal": "Drain or explicitly cancel by binding; purge only with state-store purge."
+    },
+    {
+      "id": "renderer-host",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/renderer/", "$CODEX_HOME/presence/renderer.*", "one Electron root and child windows"],
+      "dependencies": ["supervisor", "bindings", "resolver", "catalog", "electron-runtime"],
+      "dependents": [],
+      "preserved_data": ["binding geometry and last-known-good renderer revision in state-store"],
+      "removal": "Terminate the Electron root and all children before removing managed renderer code; preserve geometry unless --purge-state."
+    },
+    {
+      "id": "electron-runtime",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/renderer/node_modules/"],
+      "dependencies": [],
+      "dependents": ["renderer-host"],
+      "preserved_data": [],
+      "removal": "Remove after renderer-host termination and ownership verification."
+    },
+    {
+      "id": "stt-runtime",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/presence/stt/", "$CODEX_HOME/presence/stt-models/"],
+      "dependencies": ["supervisor", "python-runtime", "machine microphone permission"],
+      "dependents": [],
+      "preserved_data": ["explicit machine input permission"],
+      "removal": "Stop capture, revoke managed gesture registration, and remove managed STT code/models; never alter OS microphone policy."
+    },
+    {
+      "id": "public-cli",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["$CODEX_HOME/bin/presence", "$CODEX_HOME/bin/presence.cmd", "$CODEX_HOME/bin/presence.ps1"],
+      "dependencies": ["supervisor", "resolver"],
+      "dependents": ["compatibility-wrappers"],
+      "preserved_data": [],
+      "removal": "Remove only launchers whose managed hash matches the manifest."
+    },
+    {
+      "id": "compatibility-wrappers",
+      "scope": "project",
+      "owner": "codex-voice-skill",
+      "artifacts": ["toggle.py", "profiles.py", "avatar tools", "Live2D launchers"],
+      "dependencies": ["public-cli"],
+      "dependents": [],
+      "preserved_data": ["read-only v0.1 rollback inputs during the compatibility release"],
+      "removal": "Project unregister removes managed wrappers only; compatibility-release retirement requires successful migration ledger and backup/export check."
+    },
+    {
+      "id": "migration-ledger",
+      "scope": "user",
+      "owner": "presence-runtime",
+      "artifacts": ["state-store migration_ledger records", "project migration lock"],
+      "dependencies": ["state-store", "supervisor"],
+      "dependents": ["compatibility-wrappers"],
+      "preserved_data": ["v0.1 source hashes", "migration status", "rollback metadata"],
+      "removal": "Preserve for the compatibility release; purge only with explicit state purge after export verification."
+    }
+  ]
+}

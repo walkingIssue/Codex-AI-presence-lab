@@ -1,0 +1,6 @@
+# Archived v0.1 presentation metadata. Not installed or discoverable.
+interface:
+  display_name: "Live2D Avatar Controls"
+  short_description: "Bind and control local Live2D avatars"
+  default_prompt: "Use the Presence Runtime catalog and binding commands."
+

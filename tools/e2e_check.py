@@ -11,6 +11,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from canonical_projection import verify_projection
+
 
 REQUIRED_FILES = (
     "SKILL.md",
@@ -99,11 +101,61 @@ def main() -> int:
         raise SystemExit("Avatar-local resize contract is incomplete")
     if 'webContents.send("profile-curation"' not in orb_main or "onProfileCuration" not in orb_preload:
         raise SystemExit("Session-profile curation IPC is incomplete")
-    # In a source checkout the canonical package is overlaid into the skill by
-    # project_release.py. A projected release contains only the bundled copy.
+    # A source checkout has only canonical root packages. A projected release
+    # has generated skill copies with complete payload hashes.
     live2d_root = source / "live2d-avatar-runtime"
-    if not live2d_root.is_dir():
+    presence_root = source / "presence-runtime"
+    source_checkout = live2d_root.is_dir() or presence_root.is_dir()
+    if source_checkout:
+        if not live2d_root.is_dir() or not presence_root.is_dir():
+            raise SystemExit("Source checkout is missing a canonical runtime package")
+        for duplicate in (
+            skill / "live2d-avatar-runtime",
+            skill / "presence-runtime",
+        ):
+            if duplicate.exists():
+                raise SystemExit(
+                    f"Tracked/stale runtime copy exists below the source skill: {duplicate}"
+                )
+    else:
         live2d_root = skill / "live2d-avatar-runtime"
+        presence_root = skill / "presence-runtime"
+        try:
+            verify_projection(live2d_root, package="live2d-avatar-runtime")
+            verify_projection(presence_root, package="presence-runtime")
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    for required_schema in (
+        "avatar-model-pack-v0.2.schema.json",
+        "preset-v0.2.schema.json",
+        "presence-profile-v0.2.schema.json",
+        "override-patch-v0.2.schema.json",
+        "effective-snapshot-v0.2.schema.json",
+        "registration-v0.2.schema.json",
+    ):
+        assert_file(presence_root / "schemas" / required_schema)
+        json.loads((presence_root / "schemas" / required_schema).read_text(encoding="utf-8"))
+    runtime_manifest = presence_root / "runtime-manifest.json"
+    assert_file(runtime_manifest)
+    manifest_document = json.loads(runtime_manifest.read_text(encoding="utf-8"))
+    if manifest_document.get("schema") != "presence/runtime-manifest/v0.2":
+        raise SystemExit("Presence runtime manifest schema is missing or invalid")
+    required_component_fields = {
+        "id",
+        "scope",
+        "owner",
+        "artifacts",
+        "dependencies",
+        "dependents",
+        "preserved_data",
+        "removal",
+    }
+    for component in manifest_document.get("components", []):
+        missing = required_component_fields - set(component)
+        if missing:
+            raise SystemExit(
+                f"Runtime manifest component {component.get('id')!r} omitted {sorted(missing)}"
+            )
     live2d_renderer = (
         live2d_root / "src" / "live2d_avatar" / "assets" / "renderer-template" / "renderer.js"
     ).read_text(encoding="utf-8")
@@ -171,6 +223,30 @@ def main() -> int:
         raise SystemExit("TUI bridge mock worker contract was not preserved")
     if (skill / "html").exists() or (skill / "media").exists():
         raise SystemExit("Release skill still contains showcase media")
+    if not source_checkout:
+        forbidden_suffixes = {
+            ".zip",
+            ".vtube",
+            ".moc3",
+            ".model3.json",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".onnx",
+            ".bin",
+            ".wav",
+        }
+        forbidden_assets = [
+            path.relative_to(skill).as_posix()
+            for path in skill.rglob("*")
+            if path.is_file()
+            and any(path.name.lower().endswith(suffix) for suffix in forbidden_suffixes)
+        ]
+        if forbidden_assets:
+            raise SystemExit(f"User/model assets entered the release: {forbidden_assets}")
+        if any(path.is_dir() and path.name == "profiles" for path in skill.rglob("profiles")):
+            raise SystemExit("User profile directories entered the projected release")
 
     with tempfile.TemporaryDirectory(prefix="codex-voice-e2e-") as temporary:
         root = Path(temporary)
