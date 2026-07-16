@@ -13,6 +13,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from codex_override import install_override, remove_override
 from session_scope import ensure_state_file
 
 
@@ -95,6 +96,24 @@ def directml_supported() -> bool:
     a misleading .dml-venv that silently falls back to CPU.
     """
     return os.name == "nt"
+
+
+def request_codex_override(mode: str) -> bool:
+    """Resolve the install-time choice for the optional Windows command shim."""
+
+    if mode == "disable":
+        return False
+    if os.name != "nt":
+        if mode == "enable":
+            raise RuntimeError("--codex-override enable is supported only on Windows.")
+        return False
+    if mode == "enable":
+        return True
+    if not sys.stdin.isatty():
+        print("Skipping the user-wide Codex override because setup is non-interactive; use --codex-override enable to opt in.")
+        return False
+    answer = input("Enable the user-wide Codex adapter override for app-server commands? [y/N]: ").strip().lower()
+    return answer in {"y", "yes"}
 
 
 def python_version(command: list[str]) -> tuple[int, int] | None:
@@ -343,7 +362,8 @@ def install_activity_script(voice_root: Path) -> None:
 
 
 def install_tui_bridge(voice_root: Path) -> None:
-    """Expose the transparent TUI/server bridge from the project runtime."""
+    """Expose the TUI bridge and its shared Windows CLI process boundary."""
+    shutil.copy2(SCRIPT_ROOT / "cli_adapter.py", voice_root / "cli_adapter.py")
     shutil.copy2(SCRIPT_ROOT / "tui_bridge.py", voice_root / "tui_bridge.py")
 
 
@@ -474,6 +494,12 @@ def main() -> int:
         type=Path,
         help="base Python 3.11 or 3.12 executable for isolated environments",
     )
+    parser.add_argument(
+        "--codex-override",
+        choices=("ask", "enable", "disable"),
+        default="ask",
+        help="ask before installing the user-wide Windows Codex adapter shim",
+    )
     provider_group = parser.add_mutually_exclusive_group()
     provider_group.add_argument("--cuda", action="store_true", help="install the untested NVIDIA CUDA 12.x path")
     provider_group.add_argument("--directml", action="store_true", help="install the experimental Intel/DirectML path")
@@ -556,6 +582,16 @@ def main() -> int:
     install_profile_script(voice_root)
     install_voice_input_scripts(voice_root)
     install_runtime_manifest(voice_root)
+    if args.codex_override == "disable":
+        remove_override(project_root)
+    elif request_codex_override(args.codex_override):
+        install_override(
+            project_root,
+            voice_root,
+            environment_python(cpu_environment),
+            SCRIPT_ROOT / "codex_override.py",
+        )
+        print("User-wide Codex adapter override enabled for app-server commands.")
 
     print(f"Codex AI Presence setup complete in {project_root}")
     print(f"Base Python: {' '.join(base_python)}")

@@ -72,6 +72,44 @@ def _bounded_source(value: object) -> str:
     return value[:64] or "adapter"
 
 
+class PresenceIngress:
+    """Route adapter output into the playback owner's durable inbox.
+
+    This is the cross-process half of the Presence Service boundary. A TUI or
+    App Server adapter may be short-lived, while the project watcher owns the
+    single playback arbiter. Routing profile identity before enqueueing keeps
+    both paths equivalent without starting a second TTS worker.
+    """
+
+    def __init__(
+        self,
+        project_root: Path,
+        voice_root: Path,
+        inbox: Inbox,
+        *,
+        profile_registry: ProfileRegistry | None = None,
+    ) -> None:
+        self.project_root = project_root.resolve()
+        self.voice_root = voice_root.resolve()
+        self.inbox = inbox
+        self.profiles = profile_registry or ProfileRegistry(self.project_root, self.voice_root)
+
+    def _route_message(self, message: dict[str, object]) -> dict[str, object]:
+        profile = self.profiles.resolve(
+            message.get("session_id"),
+            requested_profile_id=message.get("profile_id"),
+        )
+        return {**message, **profile.routing_fields()}
+
+    def enqueue_speech(self, message: dict[str, object]) -> bool:
+        event_id = message.get("event_id")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("speech message requires event_id")
+        if message.get("project_root") != str(self.project_root):
+            raise ValueError("speech message project_root does not belong to this service")
+        return self.inbox.enqueue(self._route_message(message))
+
+
 class PresenceService:
     """Own normalized presence state while delegating audio to one arbiter."""
 

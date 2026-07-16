@@ -32,6 +32,23 @@ def stable_event_id(*parts: object) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def stable_visible_final_event_id(
+    project_root: object,
+    session_id: object,
+    turn_id: object,
+    text: object,
+) -> str:
+    """Give watcher and streaming adapters the same final-output identity."""
+
+    return stable_event_id(
+        "codex-visible-final",
+        project_root,
+        session_id,
+        turn_id,
+        text,
+    )
+
+
 def database_path(voice_root: Path) -> Path:
     return voice_root / DB_NAME
 

@@ -20,7 +20,7 @@ from activity import classify_activity, state_ttl_seconds
 from clipboard import ClipboardError, copy_text
 from configuration import configured_commentary_volume
 from delivery import AppServerClient, DeliveryError, resolve_session_label
-from inbox import Inbox, database_path, stable_event_id
+from inbox import Inbox, database_path, stable_event_id, stable_visible_final_event_id
 from presence_service import PresenceService
 from session_scope import (
     is_project_mode,
@@ -1571,7 +1571,12 @@ def main() -> int:
                 presence.enqueue_speech(
                     {
                         "schema": "codex-voice/message/v0.1",
-                        "event_id": stable_event_id(path, record.get("timestamp"), "final_answer", message),
+                        "event_id": stable_visible_final_event_id(
+                            project_root,
+                            session_id,
+                            turn_id,
+                            message,
+                        ),
                         "project_root": str(project_root),
                         "session_id": session_id,
                         "thread_id": session_id,

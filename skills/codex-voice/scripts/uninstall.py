@@ -8,6 +8,7 @@ import os
 import shutil
 from pathlib import Path
 
+from codex_override import remove_override
 from toggle import run_orb_script, stop_watcher
 
 
@@ -240,12 +241,13 @@ def main() -> int:
     else:
         print(f"Runtime manifest loaded: {len(manifest_entries)} registered artifact entries")
     stop_runtime(voice_root)
+    override_ok = remove_override(project_root)
     registration_ok, removed = remove_hook_registration(project_root, voice_root)
     hook_ok = remove_hook_file(project_root, force=args.force)
     remove_voice_root(voice_root, keep_assets=args.keep_assets)
     if removed:
         print(f"Removed {removed} Codex AI Presence Stop hook registration(s).")
-    if not registration_ok or not hook_ok:
+    if not registration_ok or not hook_ok or not override_ok:
         print("Uninstall completed with protected files; inspect the warnings above.")
         return 1
     print(f"Codex AI Presence uninstalled from {project_root}")

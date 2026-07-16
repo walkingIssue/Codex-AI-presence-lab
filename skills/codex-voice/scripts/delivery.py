@@ -3,33 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
-import re
-import shutil
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
+from cli_adapter import codex_executable, prepare_command
+
 
 class DeliveryError(RuntimeError):
     """A transcript could not be delivered as a normal Codex user turn."""
-
-
-def codex_executable() -> str | None:
-    explicit = os.environ.get("CODEX_CLI_PATH", "").strip().strip('"')
-    if explicit and Path(explicit).is_file():
-        return explicit
-    config = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "config.toml"
-    try:
-        text = config.read_text(encoding="utf-8")
-    except OSError:
-        text = ""
-    match = re.search(r"(?m)^\s*CODEX_CLI_PATH\s*=\s*[\"']([^\"']+)[\"']\s*$", text)
-    if match and Path(match.group(1)).is_file():
-        return match.group(1)
-    return shutil.which("codex")
 
 
 class AppServerClient:
@@ -99,12 +83,14 @@ class AppServerClient:
             raise DeliveryError("Codex CLI was not found; set CODEX_CLI_PATH to the working executable")
         try:
             self._process = subprocess.Popen(
-                [executable, "app-server", "--stdio"],
+                prepare_command([executable, "app-server", "--stdio"]),
                 cwd=str(self.project_root),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )

@@ -19,6 +19,8 @@ REQUIRED_FILES = (
     "scripts/configuration.py",
     "scripts/configure.py",
     "scripts/activity.py",
+    "scripts/cli_adapter.py",
+    "scripts/codex_override.py",
     "scripts/tui_bridge.py",
     "scripts/setup.py",
     "scripts/session_scope.py",
@@ -95,6 +97,8 @@ def main() -> int:
     manifest_text = (skill / "RUNTIME-MANIFEST.md").read_text(encoding="utf-8")
     for required_entry in (
         ".codex-voice/activity.py",
+        ".codex-voice/cli_adapter.py",
+        "~/.codex/codex-voice-override.json",
         ".codex-voice/tui_bridge.py",
         ".codex-voice/presence_service.py",
         ".codex-voice/presence-profiles.json",
@@ -147,6 +151,8 @@ def main() -> int:
         install_runtime_manifest(voice_root)
         if not (voice_root / "activity.py").is_file():
             raise SystemExit("Setup did not install the activity bridge into the project runtime")
+        if not (voice_root / "cli_adapter.py").is_file():
+            raise SystemExit("Setup did not install the shared CLI process adapter into the project runtime")
         if not (voice_root / "tui_bridge.py").is_file():
             raise SystemExit("Setup did not install the TUI/server bridge into the project runtime")
         if not (voice_root / "profiles.py").is_file() or not (voice_root / "configuration.py").is_file():
@@ -255,7 +261,9 @@ def main() -> int:
         )
         if '"profile_id": "luna"' not in resolved_profile.stdout:
             raise SystemExit("Session presence profile did not resolve through the installed runtime")
-        run([sys.executable, str(skill / "scripts" / "setup.py"), "--help"], project)
+        help_result = run([sys.executable, str(skill / "scripts" / "setup.py"), "--help"], project)
+        if "--codex-override" not in help_result.stdout:
+            raise SystemExit("Setup did not expose the install-time Codex override setting")
 
         hooks_dir = project / ".codex" / "hooks"
         hooks_dir.mkdir(parents=True)

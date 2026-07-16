@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
 import threading
@@ -25,6 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol, TextIO
+
+from cli_adapter import codex_executable, command_args, prepare_command
 
 
 BRIDGE_SCHEMA = "codex-voice/tui-bridge/v0.1"
@@ -42,18 +43,6 @@ def log(voice_root: Path, message: str) -> None:
             handle.write(f"{timestamp} {message}\n")
     except OSError:
         pass
-
-
-def command_args(command: str) -> list[str]:
-    """Parse a configured child command without invoking a shell."""
-
-    try:
-        args = shlex.split(command, posix=os.name != "nt")
-    except ValueError as exc:
-        raise ValueError(f"invalid bridge command: {exc}") from exc
-    if not args:
-        raise ValueError("bridge command cannot be empty")
-    return args
 
 
 class KokoroWorker(Protocol):
@@ -112,11 +101,13 @@ class JsonlKokoroWorker:
             return self.process.poll() is None
         try:
             self.process = subprocess.Popen(
-                self.command,
+                prepare_command(self.command),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 cwd=str(self.cwd),
                 env=os.environ.copy(),
@@ -465,11 +456,13 @@ class TuiServerBridge:
         log(self.voice_root, f"starting TUI bridge server={self.server_command[0]}")
         try:
             self.server = subprocess.Popen(
-                self.server_command,
+                prepare_command(self.server_command),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 cwd=str(self.project_root),
                 env=os.environ.copy(),
@@ -534,7 +527,7 @@ def main() -> int:
     parser.add_argument("--voice-root", type=Path)
     parser.add_argument(
         "--server-command",
-        default=os.environ.get("CODEX_TUI_SERVER_COMMAND", DEFAULT_SERVER_COMMAND),
+        default=None,
         help="TUI/server child command; parsed without a shell",
     )
     parser.add_argument(
@@ -545,6 +538,15 @@ def main() -> int:
 
     project_root = args.project_root.resolve()
     voice_root = (args.voice_root or project_root / ".codex-voice").resolve()
+    configured_server_command = args.server_command or os.environ.get("CODEX_TUI_SERVER_COMMAND")
+    try:
+        server_command = (
+            command_args(configured_server_command)
+            if configured_server_command
+            else [codex_executable() or "codex", "app-server", "--listen", "stdio://"]
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     worker: KokoroWorker
     if args.worker_command:
         worker = JsonlKokoroWorker(
@@ -556,7 +558,7 @@ def main() -> int:
     bridge = TuiServerBridge(
         project_root,
         voice_root,
-        command_args(args.server_command),
+        server_command,
         worker,
     )
     try:

@@ -20,6 +20,14 @@ On Windows, the same command may be run from PowerShell. On Fedora/Linux,
 setup creates a POSIX `start_voice.sh` wrapper and uses the virtualenv's
 `bin/python` interpreter.
 
+On Windows, the installing agent must ask whether to enable the optional
+user-wide Codex override before setup. When enabled,
+`~/.codex/bin/codex.cmd` and `codex.ps1` proxy only
+`codex app-server ...` through the presence adapter; ordinary Codex commands
+continue to call the real CLI. Use `--codex-override enable` or
+`--codex-override disable` for a non-interactive explicit choice. The default
+is `ask`, and non-interactive setup leaves the override disabled.
+
 Use `--force` only when setup reports a different existing `.codex/hooks/speak.py`.
 Use `--no-orb` when the machine should not install the optional Electron orb.
 Setup selects Python 3.11 or 3.12 for the isolated environments because the
@@ -65,7 +73,8 @@ voice Stop hook, restores a hook backed up by setup, and removes the local
 `.codex-voice` directory with its models and virtual environments. It refuses
 to remove a changed `speak.py` unless `--force` is supplied. Use
 `--keep-assets` when only the hook and runtime markers should be removed while
-retaining downloaded models and environments.
+retaining downloaded models and environments. If the Windows user-wide Codex
+override is still unchanged and owned by this project, uninstall removes it too.
 
 Every projected revision includes `RUNTIME-MANIFEST.md`. Setup copies it to
 `.codex-voice/RUNTIME-MANIFEST.md`; it records the project-local files and the
@@ -103,7 +112,9 @@ python .codex-voice/tui_bridge.py --server-command "mock-server --stdio"
 Pass `--worker-command` when the JSONL Kokoro worker is available. The worker
 command is parsed without a shell and receives one normalized JSON object per
 line. This is a custom-client/TUI adapter path; the packaged Codex UI is not
-automatically redirected through it.
+automatically redirected through it. The shared CLI boundary keeps the Linux
+direct-exec path intact and handles quoted Windows paths plus npm `.cmd`/`.bat`
+shims for both TUI and App Server delivery.
 
 ## Configuration
 
