@@ -19,7 +19,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VOICE_ROOT = ROOT / ".codex-voice"
+VOICE_ROOT = Path(
+    os.environ.get("CODEX_PRESENCE_HOME", str(ROOT / ".codex-voice"))
+).expanduser().resolve()
 MODEL_PATH = VOICE_ROOT / "kokoro-v1.0.int8.onnx"
 DML_MODEL_PATH = VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.int8.dml-conv2d.onnx"
 VOICES_PATH = VOICE_ROOT / "voices-v1.0.bin"

@@ -721,6 +721,36 @@ class PresenceStore:
         ).fetchall()
         return [self.assert_source_active(row["source_id"], now=now) for row in rows]
 
+    def disconnect_source(self, source_id: str, *, now: float | None = None) -> None:
+        timestamp = time.time() if now is None else now
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT binding_id FROM sources WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+            if row is None:
+                return
+            connection.execute(
+                "UPDATE sources SET connected=0, last_seen=? WHERE source_id=?",
+                (timestamp, source_id),
+            )
+            active = connection.execute(
+                """
+                SELECT 1 FROM sources
+                WHERE binding_id=? AND connected=1 AND expires_at>?
+                LIMIT 1
+                """,
+                (row["binding_id"], timestamp),
+            ).fetchone()
+            if active is None:
+                connection.execute(
+                    """
+                    UPDATE bindings SET state='dormant', updated_at=?
+                    WHERE binding_id=? AND state<>'deleted'
+                    """,
+                    (timestamp, row["binding_id"]),
+                )
+
     def next_revision(self, binding_id: str) -> int:
         row = self._connection.execute(
             """
@@ -785,6 +815,8 @@ class PresenceStore:
         binding_id: str,
         revision: int,
         consumer: str,
+        *,
+        promote: bool = True,
     ) -> bool:
         if consumer not in {"voice", "renderer"}:
             raise ValidationError("consumer must be voice or renderer")
@@ -814,42 +846,140 @@ class PresenceStore:
                 (not row["requires_voice"] or row["voice_ack"])
                 and (not row["requires_renderer"] or row["renderer_ack"])
             )
-            if ready:
+            if ready and promote:
+                self._promote_candidate(connection, binding_id, revision, now=now)
+        return ready
+
+    def _promote_candidate(
+        self,
+        connection: sqlite3.Connection,
+        binding_id: str,
+        revision: int,
+        *,
+        now: float,
+    ) -> EffectiveSnapshot:
+        row = connection.execute(
+            """
+            SELECT * FROM effective_snapshots
+            WHERE binding_id=? AND revision=? AND status='candidate'
+            """,
+            (binding_id, revision),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(
+                f"Candidate snapshot {binding_id}@{revision} was not found"
+            )
+        ready = bool(
+            (not row["requires_voice"] or row["voice_ack"])
+            and (not row["requires_renderer"] or row["renderer_ack"])
+        )
+        if not ready:
+            raise ConflictError(
+                f"Candidate snapshot {binding_id}@{revision} lacks required acknowledgements"
+            )
+        connection.execute(
+            """
+            UPDATE effective_snapshots
+            SET status='superseded'
+            WHERE binding_id=? AND status='active'
+            """,
+            (binding_id,),
+        )
+        connection.execute(
+            """
+            UPDATE effective_snapshots
+            SET status='active', acknowledged_at=?
+            WHERE binding_id=? AND revision=?
+            """,
+            (now, binding_id, revision),
+        )
+        connection.execute(
+            """
+            UPDATE bindings
+            SET effective_revision=?, candidate_revision=NULL, updated_at=?
+            WHERE binding_id=?
+            """,
+            (revision, now, binding_id),
+        )
+        snapshot = self._snapshot_from_row(row)
+        self._replace_binding_references(connection, snapshot)
+        return snapshot
+
+    def promote_candidates(
+        self,
+        candidates: Mapping[str, int],
+        *,
+        project_update: tuple[str, Mapping[str, Any]] | None = None,
+        session_update: tuple[str, Mapping[str, Any] | None] | None = None,
+    ) -> list[EffectiveSnapshot]:
+        if not candidates:
+            raise ValidationError("at least one candidate is required")
+        normalized_project: tuple[str, dict[str, Any]] | None = None
+        if project_update is not None:
+            normalized_project = (
+                project_update[0],
+                validate_patch(project_update[1], path="project"),
+            )
+        normalized_session: tuple[str, dict[str, Any] | None] | None = None
+        if session_update is not None:
+            normalized_session = (
+                session_update[0],
+                (
+                    validate_patch(session_update[1], path="session")
+                    if session_update[1] is not None
+                    else None
+                ),
+            )
+        now = time.time()
+        promoted: list[EffectiveSnapshot] = []
+        with self.transaction() as connection:
+            if normalized_project is not None:
+                project_id, patch = normalized_project
+                if connection.execute(
+                    "SELECT 1 FROM projects WHERE project_id=?",
+                    (project_id,),
+                ).fetchone() is None:
+                    raise NotFoundError(
+                        f"Project instance {project_id!r} is not registered"
+                    )
                 connection.execute(
                     """
-                    UPDATE effective_snapshots
-                    SET status='superseded'
-                    WHERE binding_id=? AND status='active'
+                    INSERT INTO project_defaults(project_id, patch_json, updated_at)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(project_id) DO UPDATE SET
+                        patch_json=excluded.patch_json,
+                        updated_at=excluded.updated_at
                     """,
-                    (binding_id,),
+                    (project_id, _canonical_json(patch), now),
                 )
-                connection.execute(
-                    """
-                    UPDATE effective_snapshots
-                    SET status='active', acknowledged_at=?
-                    WHERE binding_id=? AND revision=?
-                    """,
-                    (now, binding_id, revision),
-                )
-                connection.execute(
-                    """
-                    UPDATE bindings
-                    SET effective_revision=?, candidate_revision=NULL, updated_at=?
-                    WHERE binding_id=?
-                    """,
-                    (revision, now, binding_id),
-                )
-                snapshot = self._snapshot_from_row(
+            if normalized_session is not None:
+                binding_id, patch = normalized_session
+                if patch is None:
+                    connection.execute(
+                        "DELETE FROM session_overrides WHERE binding_id=?",
+                        (binding_id,),
+                    )
+                else:
                     connection.execute(
                         """
-                        SELECT snapshot_json FROM effective_snapshots
-                        WHERE binding_id=? AND revision=?
+                        INSERT INTO session_overrides(binding_id, patch_json, updated_at)
+                        VALUES(?, ?, ?)
+                        ON CONFLICT(binding_id) DO UPDATE SET
+                            patch_json=excluded.patch_json,
+                            updated_at=excluded.updated_at
                         """,
-                        (binding_id, revision),
-                    ).fetchone()
+                        (binding_id, _canonical_json(patch), now),
+                    )
+            for binding_id, revision in candidates.items():
+                promoted.append(
+                    self._promote_candidate(
+                        connection,
+                        binding_id,
+                        revision,
+                        now=now,
+                    )
                 )
-                self._replace_binding_references(connection, snapshot)
-        return ready
+        return promoted
 
     def fail_snapshot(self, binding_id: str, revision: int, diagnostic: str) -> None:
         now = time.time()
