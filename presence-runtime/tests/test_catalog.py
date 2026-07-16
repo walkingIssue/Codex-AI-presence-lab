@@ -56,14 +56,15 @@ def test_avatar_assets_are_copied_into_immutable_fingerprint_directory(
 ) -> None:
     source = tmp_path / "source-model"
     source.mkdir()
-    (source / "model.json").write_text("owned by user", encoding="utf-8")
+    (source / "Higan.model3.json").write_text("owned by user", encoding="utf-8")
     catalog = Catalog(tmp_path / "catalog")
     catalog.register_avatar(higan_pack, assets=source)
-    source.joinpath("model.json").write_text("changed later", encoding="utf-8")
+    source.joinpath("Higan.model3.json").write_text("changed later", encoding="utf-8")
 
     key = higan_pack["model_fingerprint"].removeprefix("sha256:")
-    copied = catalog.root / "avatars" / key / "assets" / "model.json"
+    copied = catalog.root / "avatars" / key / "assets" / "Higan.model3.json"
     assert copied.read_text(encoding="utf-8") == "owned by user"
+    assert (catalog.root / "avatars" / key / "renderer" / "index.html").is_file()
 
 
 def test_portable_export_refuses_overwrite_and_removal_checks_references(
@@ -86,4 +87,3 @@ def test_portable_export_refuses_overwrite_and_removal_checks_references(
         )
     catalog.remove("profile", "shared", references=["binding-1"], force=True)
     assert catalog.list_profiles() == []
-

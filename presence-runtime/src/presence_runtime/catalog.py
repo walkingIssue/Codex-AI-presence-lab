@@ -101,7 +101,9 @@ class Catalog:
                     )
                 return f"{pack['avatar_id']}@{pack['version']}"
 
-            temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+            # Keep the staging name short: pytest/user temp roots can already
+            # be deep enough to approach the legacy Windows MAX_PATH boundary.
+            temporary = target.parent / f".new-{uuid.uuid4().hex[:8]}"
             temporary.mkdir(parents=False)
             try:
                 _atomic_json(temporary / "pack.json", pack)
@@ -110,6 +112,21 @@ class Catalog:
                     if not source.is_dir():
                         raise NotFoundError(f"Avatar asset directory was not found: {source}")
                     shutil.copytree(source, temporary / "assets")
+                    if pack["renderer"]["kind"] == "live2d":
+                        try:
+                            from live2d_avatar.catalog_bundle import (
+                                materialize_catalog_bundle,
+                            )
+                        except ImportError as exc:
+                            raise ConflictError(
+                                "Canonical Live2D runtime is unavailable; "
+                                "cannot materialize a catalog renderer"
+                            ) from exc
+                        materialize_catalog_bundle(
+                            pack,
+                            source,
+                            temporary / "renderer",
+                        )
                 os.replace(temporary, target)
             finally:
                 if temporary.exists():

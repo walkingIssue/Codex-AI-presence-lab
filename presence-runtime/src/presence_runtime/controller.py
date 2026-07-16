@@ -473,6 +473,13 @@ class RuntimeController:
             target.append(binding["binding_id"])
         return {"restored": restored, "failed": failed}
 
+    def sync_binding_visibility(self) -> None:
+        setter = getattr(self.renderer, "set_binding_active", None)
+        if not callable(setter):
+            return
+        for binding in self.store.list_bindings():
+            setter(binding["binding_id"], binding["state"] == "active")
+
     def _stage_and_ack(self, candidate: EffectiveSnapshot) -> None:
         self.store.stage_snapshot(candidate)
         try:

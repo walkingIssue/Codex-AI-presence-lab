@@ -417,6 +417,24 @@
     });
   }
 
+  function applyEffectiveSnapshot(snapshot) {
+    if (!snapshot || snapshot.schema !== "presence/renderer-snapshot/v0.2") return;
+    if (!snapshot.semantic || !Array.isArray(snapshot.semantic.effective_actions)) return;
+    const avatarId = String(snapshot.avatar_ref || "").split("@", 1)[0];
+    if (avatarId && avatarId !== config.avatar_id) {
+      throw new Error(`Resolved avatar ${avatarId} does not match renderer ${config.avatar_id}`);
+    }
+    avatarStateApplied = true;
+    activeActionIds = new Set(knownActionIds(snapshot.semantic.effective_actions));
+    // v0.2 already includes the activity overlay. Never re-resolve the model's
+    // legacy activity table in JavaScript.
+    activityActions = {};
+    activity = typeof snapshot.semantic.activity === "string"
+      ? snapshot.semantic.activity
+      : "idle";
+    rebuildComposedOperations();
+  }
+
   function fitModel() {
     const bounds = model.getLocalBounds();
     if (!(bounds.width > 0 && bounds.height > 0)) throw new Error("Avatar has no drawable bounds");
@@ -533,6 +551,12 @@
     window.addEventListener("resize", () => resizeViewport());
   }
 
+  function attachPresenceBridge() {
+    if (!window.presenceRenderer) return;
+    window.presenceRenderer.onSnapshot(applyEffectiveSnapshot);
+    window.presenceRenderer.onEvent(applyAudioEvent);
+  }
+
   async function start() {
     if (!window.PIXI?.live2d?.Live2DModel) throw new Error("Local Live2D renderer did not load");
     if (!config.model || typeof config.model.path !== "string") throw new Error("Avatar capabilities have no model path");
@@ -577,8 +601,13 @@
     app.start();
     applyActivityRule();
     console.info("Live2D avatar state renderer ready", config.avatar_id);
+    window.presenceRenderer?.ready();
   }
 
   attachOrbBridge();
-  start().catch((error) => console.error("Live2D avatar load failed", error));
+  attachPresenceBridge();
+  start().catch((error) => {
+    console.error("Live2D avatar load failed", error);
+    window.presenceRenderer?.failed(String(error?.message || error));
+  });
 })();

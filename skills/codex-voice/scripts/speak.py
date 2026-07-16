@@ -435,9 +435,18 @@ def spectral_bands(samples, count: int = 16) -> list[float]:
 class OrbPlaybackTimeline:
     """Schedule orb frames against the moment audio is sent to the player."""
 
-    def __init__(self, orb: socket.socket | None, sample_rate: int) -> None:
+    def __init__(
+        self,
+        orb: socket.socket | None,
+        sample_rate: int,
+        *,
+        binding_id: str | None = None,
+        utterance_id: str | None = None,
+    ) -> None:
         self.orb = orb
         self.sample_rate = float(sample_rate)
+        self.binding_id = binding_id
+        self.utterance_id = utterance_id
         self.events: queue.PriorityQueue[tuple[float, int, dict]] = queue.PriorityQueue()
         self.producer_done = threading.Event()
         self.scheduler_done = threading.Event()
@@ -450,7 +459,7 @@ class OrbPlaybackTimeline:
         if self.orb is None or self.scheduler is not None:
             return
         self.started_at = time.monotonic()
-        orb_send(self.orb, {"type": "state", "state": "speaking"})
+        orb_send(self.orb, self._packet({"type": "state", "state": "speaking"}))
         self.scheduler = threading.Thread(
             target=self._send_events,
             name="codex-orb-playback-clock",
@@ -474,13 +483,13 @@ class OrbPlaybackTimeline:
             frame = samples[frame_start : frame_start + frame_size]
             rms = float(np.sqrt(np.mean(np.square(frame)))) if frame.size else 0.0
             peak = float(np.max(np.abs(frame))) if frame.size else 0.0
-            payload = {
+            payload = self._packet({
                 "type": "audio",
                 "amplitude": min(1.0, rms * 5.0 + peak * 0.10),
                 "rms": rms,
                 "peak": peak,
                 "bands": spectral_bands(frame),
-            }
+            })
             due_time = self.started_at + (self.cursor + frame_start) / self.sample_rate
             self.events.put((due_time, self.sequence, payload))
             self.sequence += 1
@@ -509,8 +518,35 @@ class OrbPlaybackTimeline:
             self.scheduler.join(timeout=max(2.0, self.cursor / self.sample_rate + 1.0))
             if not self.scheduler_done.is_set():
                 hook_log("orb playback scheduler timed out")
-        orb_send(self.orb, {"type": "state", "state": "idle"})
+        orb_send(self.orb, self._packet({"type": "state", "state": "idle"}))
         self.orb.close()
+
+    def _packet(self, payload: dict) -> dict:
+        if self.binding_id is None or self.utterance_id is None:
+            return payload
+        return {
+            **payload,
+            "binding_id": self.binding_id,
+            "utterance_id": self.utterance_id,
+        }
+
+
+def create_orb_timeline(
+    orb: socket.socket | None,
+    sample_rate: int,
+    *,
+    binding_id: str | None,
+    utterance_id: str | None,
+) -> OrbPlaybackTimeline:
+    if binding_id is None and utterance_id is None:
+        # Preserve the v0.1 seam used by compatibility tests and direct hooks.
+        return OrbPlaybackTimeline(orb, sample_rate)
+    return OrbPlaybackTimeline(
+        orb,
+        sample_rate,
+        binding_id=binding_id,
+        utterance_id=utterance_id,
+    )
 
 
 def get_tts():
@@ -606,6 +642,8 @@ def stream_audio(
     interruptible: bool = True,
     pauseable: bool = False,
     orb_port: int | None = None,
+    binding_id: str | None = None,
+    utterance_id: str | None = None,
 ) -> None:
     """Generate PCM independently and feed a pauseable, frame-paced OS sink."""
     import asyncio
@@ -781,7 +819,12 @@ def stream_audio(
                         paced_player = current
                         playback_deadline = None
                     if timeline is None:
-                        timeline = OrbPlaybackTimeline(orb, sample_rate)
+                        timeline = create_orb_timeline(
+                            orb,
+                            sample_rate,
+                            binding_id=binding_id,
+                            utterance_id=utterance_id,
+                        )
                     try:
                         assert current.stdin is not None
                         current.stdin.write(frame.tobytes())
@@ -855,6 +898,8 @@ def play_audio(
     text: str | None = None,
     interruptible: bool = True,
     orb_port: int | None = None,
+    binding_id: str | None = None,
+    utterance_id: str | None = None,
 ) -> None:
     ffplay = ffplay_executable()
     if ffplay:
@@ -869,7 +914,12 @@ def play_audio(
                 audio, sample_rate = sf.read(
                     str(audio_path), dtype="float32", always_2d=False
                 )
-                timeline = OrbPlaybackTimeline(orb_socket(orb_port), int(sample_rate))
+                timeline = create_orb_timeline(
+                    orb_socket(orb_port),
+                    int(sample_rate),
+                    binding_id=binding_id,
+                    utterance_id=utterance_id,
+                )
                 player = subprocess.Popen(
                     [
                         ffplay,
@@ -1014,6 +1064,14 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
     audio_path: Path | None = None
     event_id = payload.get("tts_event_id")
     event_id = event_id.strip() if isinstance(event_id, str) and event_id.strip() else None
+    binding_id = payload.get("tts_binding_id")
+    binding_id = binding_id.strip() if isinstance(binding_id, str) and binding_id.strip() else None
+    utterance_id = payload.get("tts_utterance_id")
+    utterance_id = (
+        utterance_id.strip()
+        if isinstance(utterance_id, str) and utterance_id.strip()
+        else None
+    )
     pauseable = bool(payload.get("tts_pauseable"))
     interruptible = not pauseable
     orb_port: int | None = None
@@ -1037,6 +1095,8 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
                 interruptible=interruptible,
                 pauseable=pauseable,
                 orb_port=orb_port,
+                binding_id=binding_id,
+                utterance_id=utterance_id,
             )
         else:
             audio_path = generate_audio(text)
@@ -1046,6 +1106,8 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
                 text=text,
                 interruptible=interruptible,
                 orb_port=orb_port,
+                binding_id=binding_id,
+                utterance_id=utterance_id,
             )
         hook_log("completed")
     except PlaybackInterrupted:

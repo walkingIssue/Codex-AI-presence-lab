@@ -10,6 +10,7 @@ from .errors import (
 )
 from .models import EffectiveSnapshot, RendererSettings, SemanticSnapshot, TTSSettings
 from .resolver import PresenceResolver
+from .renderer import ElectronRendererSupervisor
 from .store import PresenceStore
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "CatalogReferenceError",
     "ConflictError",
     "EffectiveSnapshot",
+    "ElectronRendererSupervisor",
     "NotFoundError",
     "PresenceError",
     "PresenceResolver",
@@ -28,4 +30,3 @@ __all__ = [
 ]
 
 __version__ = "0.2.0.dev0"
-

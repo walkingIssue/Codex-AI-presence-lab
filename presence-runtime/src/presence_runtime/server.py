@@ -57,6 +57,7 @@ class RuntimeProtocolHandler:
                         **registration,
                     }
                 )
+                self.controller.sync_binding_visibility()
             except PresenceError as exc:
                 connection.send(self._error(exc))
                 return
@@ -75,6 +76,7 @@ class RuntimeProtocolHandler:
         finally:
             if context is not None:
                 self.controller.store.disconnect_source(context.source_id)
+                self.controller.sync_binding_visibility()
             connection.close()
 
     def _register(self, message: Mapping[str, Any]) -> dict[str, Any]:
@@ -206,9 +208,16 @@ class PresenceServer:
         self.handler = RuntimeProtocolHandler(controller)
         self._stop = threading.Event()
         self._threads: set[threading.Thread] = set()
+        self._reaper: threading.Thread | None = None
 
     def serve_forever(self) -> None:
         self.listener.open()
+        self._reaper = threading.Thread(
+            target=self._reap_leases,
+            name="presence-lease-reaper",
+            daemon=True,
+        )
+        self._reaper.start()
         try:
             while not self._stop.is_set():
                 connection = self.listener.accept()
@@ -220,11 +229,18 @@ class PresenceServer:
                 )
                 self._threads.add(thread)
                 thread.start()
-                self.controller.store.expire_leases()
         finally:
             self.listener.close()
             for thread in tuple(self._threads):
                 thread.join(timeout=2)
+            if self._reaper is not None:
+                self._reaper.join(timeout=2)
+
+    def _reap_leases(self) -> None:
+        while not self._stop.wait(5):
+            expired = self.controller.store.expire_leases()
+            if expired:
+                self.controller.sync_binding_visibility()
 
     def _serve_thread(self, connection: FramedConnection) -> None:
         try:

@@ -22,10 +22,12 @@ class KokoroWorkerSupervisor:
         runtime_root: Path,
         python: Path,
         worker_script: Path,
+        renderer_udp_port: int = 17839,
     ) -> None:
         self.runtime_root = runtime_root.expanduser().resolve()
         self.python = python.expanduser().resolve()
         self.worker_script = worker_script.expanduser().resolve()
+        self.renderer_udp_port = renderer_udp_port
         self.process: subprocess.Popen[str] | None = None
         self.ready = False
         self._lock = threading.RLock()
@@ -89,6 +91,7 @@ class KokoroWorkerSupervisor:
                 "tts_mode": tts["playback_mode"],
                 "tts_volume": tts["volume"],
                 "tts_pauseable": item["kind"] != "commentary",
+                "tts_orb_port": self.renderer_udp_port,
             }
             try:
                 self.process.stdin.write(
