@@ -132,6 +132,7 @@ def main() -> int:
         "override-patch-v0.2.schema.json",
         "effective-snapshot-v0.2.schema.json",
         "registration-v0.2.schema.json",
+        "renderer-snapshot-v0.2.schema.json",
     ):
         assert_file(presence_root / "schemas" / required_schema)
         json.loads((presence_root / "schemas" / required_schema).read_text(encoding="utf-8"))

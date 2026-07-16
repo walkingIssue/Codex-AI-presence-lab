@@ -11,7 +11,7 @@
     "playback_mode": {"enum": ["stream", "quality"]},
     "volume": {"type": "integer", "minimum": 0, "maximum": 100},
     "commentary_ratio": {"type": "number", "minimum": 0, "maximum": 1},
-    "avatar_ref": {"type": ["string", "null"], "minLength": 1, "x-clearable": true},
+    "avatar_ref": {"type": "string", "minLength": 1},
     "preset_ref": {"type": ["string", "null"], "minLength": 1, "x-clearable": true},
     "progress_visible": {"type": "boolean"},
     "renderer_visible": {"type": "boolean"},
@@ -19,7 +19,15 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "actions": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "slots": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9._-]{0,127}$"},
+          "additionalProperties": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string"}
+          }
+        },
         "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
         "activity": {
           "type": "object",
