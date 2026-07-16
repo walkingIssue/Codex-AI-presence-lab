@@ -148,6 +148,7 @@
   let activityExpiresAt = 0;
   let composedOperations = [];
   const parameterIndices = new Map();
+  const semanticParameterDefaults = new Map();
   let fallbackMouthPrimaryIndex = -1;
   let fallbackMouthSecondaryIndex = -1;
   let angleXIndex = -1;
@@ -257,7 +258,13 @@
     for (const fixed of fixedParts) fixed.partIndex = coreModel.getPartIndex(fixed.partId);
     for (const operation of safeDefaults) operation.parameterIndex = resolveParameterIndex(operation.parameterId);
     for (const action of actionsInReplayOrder) {
-      for (const operation of action.operations) operation.parameterIndex = resolveParameterIndex(operation.parameterId);
+      for (const operation of action.operations) {
+        operation.parameterIndex = resolveParameterIndex(operation.parameterId);
+        const defaultValue = coreModel.getParameterDefaultValue(operation.parameterIndex);
+        if (Number.isFinite(defaultValue)) {
+          semanticParameterDefaults.set(operation.parameterIndex, defaultValue);
+        }
+      }
     }
     for (const target of speechMotionTargets) target.parameterIndex = resolveParameterIndex(target.parameterId);
     if (mouthMotion) {
@@ -458,9 +465,13 @@
       const phase = now * target.angularFrequency + target.phase;
       addParameter(target.parameterIndex, Math.sin(phase) * (target.idleGain + speechEnergy * target.speechGain));
     }
-    // Cubism has saved the motion baseline immediately before this hook and will
-    // restore it after drawing. Applying relative expression operations here
-    // makes the complete action state frame-local rather than cumulative.
+    // Expression files use relative Add operations. Reset each semantic control
+    // to its Cubism default before replaying the selected action set, otherwise
+    // an action removed from a routed session can leave a clothing/accessory
+    // parameter latched from its previous frame.
+    for (const [parameterIndex, defaultValue] of semanticParameterDefaults) {
+      setParameter(parameterIndex, defaultValue);
+    }
     for (const operation of composedOperations) applyOperation(operation);
     applyFixedControls();
     if (eyelidMotion) {

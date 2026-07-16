@@ -873,6 +873,7 @@ print(json.dumps(payload))
             function parameterId(index) { return parameterIds[index]; }
             const core = {
               getParameterIndex(id) { return parameterIndex(id); },
+              getParameterDefaultValue(_index) { return 0; },
               addParameterValueByIndex(index, value) { const id = parameterId(index); calls.push(id); values.set(id, (values.get(id) || 0) + value); },
               setParameterValueByIndex(index, value) { const id = parameterId(index); setCalls.push([id, value]); values.set(id, value); },
               multiplyParameterValueByIndex(index, value) { const id = parameterId(index); values.set(id, (values.get(id) || 0) * value); },
@@ -980,7 +981,7 @@ print(json.dumps(payload))
               if (calls.filter((id) => id.startsWith("control.")).join(",") !== "control.base,control.overlay") throw new Error("renderer did not use model-local replay order");
               const idleEye = setCalls.find(([id]) => id === "rig.eye.left");
               if (!idleEye || !(idleEye[1] >= 0.34 && idleEye[1] <= 0.5)) throw new Error("idle eyelid sway escaped its configured range");
-              values.set("control.base", 0); values.set("control.overlay", 0); calls.length = 0;
+              calls.length = 0;
               callbacks.avatar({ avatar_id: "demo-avatar", revision: 2, actions: [] });
               lifecycle.beforeModelUpdate();
               if (values.get("control.base") !== 0 || values.get("control.overlay") !== 0) throw new Error("reset retained an old action");
