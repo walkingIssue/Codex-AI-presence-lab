@@ -1,0 +1,101 @@
+#presence-input-feedback {
+  position: fixed;
+  inset: 3px;
+  z-index: 2147483647;
+  box-sizing: border-box;
+  border: 2px solid transparent;
+  border-radius: 14px;
+  opacity: 0;
+  pointer-events: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+#presence-input-feedback::before,
+#presence-input-feedback::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border: 0 solid transparent;
+  border-radius: 9px;
+  pointer-events: none;
+}
+
+html[data-presence-feedback="targeted"] #presence-input-feedback,
+html[data-presence-feedback="move"] #presence-input-feedback {
+  opacity: 0.96;
+  border-color: #61d9ff;
+  box-shadow: inset 0 0 12px #42cfffaa, 0 0 12px #42cfff88;
+}
+
+html[data-presence-feedback="resize"] #presence-input-feedback {
+  opacity: 1;
+  border-color: #ffc857;
+  box-shadow: inset 0 0 14px #ffb52eaa, 0 0 14px #ffb52e99;
+}
+
+html[data-presence-feedback="resize"] #presence-input-feedback::before {
+  border-top-width: 4px;
+  border-left-width: 4px;
+  border-color: #fff1b8 transparent transparent #fff1b8;
+}
+
+html[data-presence-feedback="resize"] #presence-input-feedback::after {
+  border-right-width: 4px;
+  border-bottom-width: 4px;
+  border-color: transparent #fff1b8 #fff1b8 transparent;
+}
+
+html[data-presence-feedback="recording"] #presence-input-feedback {
+  opacity: 1;
+  border-color: #ff5775;
+  box-shadow: inset 0 0 18px #ff385cbb, 0 0 18px #ff385caa;
+  animation: presence-recording-pulse 820ms ease-in-out infinite alternate;
+}
+
+html[data-presence-feedback="transcribing"] #presence-input-feedback {
+  opacity: 1;
+  border-color: #b976ff;
+  box-shadow: inset 0 0 18px #9b4dffbb, 0 0 18px #9b4dffaa;
+  animation: presence-inference-pulse 620ms ease-in-out infinite alternate;
+}
+
+html[data-presence-feedback="ready"] #presence-input-feedback {
+  opacity: 1;
+  border-color: #ffd166;
+  box-shadow: inset 0 0 16px #ffc53daa, 0 0 16px #ffc53d99;
+}
+
+html[data-presence-feedback="delivered"] #presence-input-feedback {
+  opacity: 1;
+  border-color: #55f59a;
+  box-shadow: inset 0 0 22px #27e983cc, 0 0 22px #27e983bb;
+  animation: presence-terminal-flash 900ms ease-out both;
+}
+
+html[data-presence-feedback="failed"] #presence-input-feedback {
+  opacity: 1;
+  border-color: #ff334f;
+  box-shadow: inset 0 0 24px #ff193dcc, 0 0 24px #ff193dcc;
+  animation: presence-terminal-flash 900ms ease-out both;
+}
+
+@keyframes presence-recording-pulse {
+  from { filter: brightness(0.85); }
+  to { filter: brightness(1.35); }
+}
+
+@keyframes presence-inference-pulse {
+  from { filter: brightness(0.8) hue-rotate(-8deg); }
+  to { filter: brightness(1.4) hue-rotate(12deg); }
+}
+
+@keyframes presence-terminal-flash {
+  0%, 45% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #presence-input-feedback {
+    animation: none !important;
+  }
+}

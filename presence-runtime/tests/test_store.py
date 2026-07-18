@@ -201,5 +201,10 @@ def test_voice_input_transcript_is_durable_until_exact_binding_acknowledges(
     assert store.pending_inputs(first["binding_id"])[0]["transcript"] == "hello runtime"
     with pytest.raises(NotFoundError, match="not found"):
         store.acknowledge_input(second["binding_id"], input_id)
-    store.acknowledge_input(first["binding_id"], input_id)
+    acknowledged = store.acknowledge_input(first["binding_id"], input_id)
+    assert acknowledged == {
+        "binding_id": first["binding_id"],
+        "input_id": input_id,
+        "capture_id": "capture-1",
+    }
     assert store.pending_inputs(first["binding_id"]) == []

@@ -249,6 +249,21 @@ class ElectronRendererSupervisor:
                         self.input_handler(message)
                     except Exception as exc:
                         self._last_error = str(exc)
+                        binding_id = message.get("binding_id")
+                        capture_id = message.get("capture_id")
+                        if isinstance(binding_id, str) and isinstance(capture_id, str):
+                            threading.Thread(
+                                target=self.input_event,
+                                args=(
+                                    {
+                                        "binding_id": binding_id,
+                                        "capture_id": capture_id,
+                                        "state": "failed",
+                                    },
+                                ),
+                                name=f"presence-input-failed-{capture_id[:8]}",
+                                daemon=True,
+                            ).start()
                 continue
             if message_type == "response":
                 request_id = message.get("id")
@@ -362,6 +377,17 @@ class ElectronRendererSupervisor:
         try:
             result = self._request(
                 {"type": "activity", "event": dict(event)},
+                timeout=5,
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            return False
+        return bool(result.get("routed"))
+
+    def input_event(self, event: Mapping[str, Any]) -> bool:
+        try:
+            result = self._request(
+                {"type": "input-state", "event": dict(event)},
                 timeout=5,
             )
         except Exception as exc:

@@ -230,3 +230,31 @@ def test_playback_status_pause_resume_and_cancel_are_binding_scoped(tmp_path) ->
     client.send({"type": "disconnect"})
     client.recv()
     thread.join(timeout=2)
+
+
+def test_voice_input_acknowledges_delivery_on_the_exact_renderer_binding(tmp_path) -> None:
+    handler, controller = build_handler(tmp_path)
+    client, thread = start_pair(handler)
+    registered = register(client, tmp_path / "project", str(uuid.uuid4()))
+    input_id = controller.store.begin_input(registered["binding_id"], "capture-1")
+    controller.store.finish_input(input_id, transcript="hello from speech input")
+
+    client.send({"type": "input/poll"})
+    pending = client.recv()
+    assert pending["type"] == "input/pending"
+    assert len(pending["items"]) == 1
+    assert pending["items"][0]["input_id"] == input_id
+    assert pending["items"][0]["capture_id"] == "capture-1"
+    assert pending["items"][0]["transcript"] == "hello from speech input"
+
+    client.send({"type": "input/ack", "input_id": input_id})
+    assert client.recv() == {"type": "input/acknowledged", "input_id": input_id}
+    assert controller.renderer.inputs[-1] == {
+        "binding_id": registered["binding_id"],
+        "capture_id": "capture-1",
+        "state": "delivered",
+    }
+
+    client.send({"type": "disconnect"})
+    client.recv()
+    thread.join(timeout=2)

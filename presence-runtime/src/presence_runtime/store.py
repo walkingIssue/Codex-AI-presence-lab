@@ -1578,8 +1578,17 @@ class PresenceStore:
             for row in rows
         ]
 
-    def acknowledge_input(self, binding_id: str, input_id: str) -> None:
+    def acknowledge_input(self, binding_id: str, input_id: str) -> dict[str, str]:
         with self.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT capture_id FROM input_transcripts
+                WHERE binding_id=? AND input_id=? AND status='ready'
+                """,
+                (binding_id, input_id),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Ready voice input {input_id!r} was not found")
             changed = connection.execute(
                 """
                 UPDATE input_transcripts SET status='delivered', updated_at=?
@@ -1589,6 +1598,11 @@ class PresenceStore:
             ).rowcount
             if not changed:
                 raise NotFoundError(f"Ready voice input {input_id!r} was not found")
+        return {
+            "binding_id": binding_id,
+            "input_id": input_id,
+            "capture_id": row["capture_id"],
+        }
 
     def begin_configuration_transaction(
         self,

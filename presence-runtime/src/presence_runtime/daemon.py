@@ -151,6 +151,31 @@ def run() -> int:
                 **stt.status(),
             }
 
+        def notify_input_feedback(
+            binding_id: str,
+            capture_id: str,
+            state: str,
+        ) -> None:
+            controller_holder["controller"].input_event(
+                binding_id=binding_id,
+                capture_id=capture_id,
+                state=state,
+            )
+
+        def notify_input_feedback_async(
+            binding_id: str,
+            capture_id: str,
+            state: str,
+        ) -> None:
+            # renderer_input runs on the renderer supervisor's response reader.
+            # A synchronous command from that thread would wait on itself.
+            threading.Thread(
+                target=notify_input_feedback,
+                args=(binding_id, capture_id, state),
+                name=f"presence-input-feedback-{capture_id[:8]}",
+                daemon=True,
+            ).start()
+
         def renderer_input(message: Mapping[str, Any]) -> None:
             binding_id = message.get("binding_id")
             capture_id = message.get("capture_id")
@@ -178,19 +203,27 @@ def run() -> int:
             recording = Path(recording_value).resolve() if isinstance(recording_value, str) else None
             if state != "capture-finish" or recording is None:
                 store.finish_input(input_id, diagnostic="invalid renderer input transition")
+                notify_input_feedback_async(binding_id, capture_id, "failed")
                 return
             try:
                 recording.relative_to(input_root.resolve())
             except ValueError:
                 store.finish_input(input_id, diagnostic="recording escaped managed input root")
+                notify_input_feedback_async(binding_id, capture_id, "failed")
                 return
 
             def transcribe() -> None:
                 try:
-                    transcript = stt.transcribe(recording)
-                    store.finish_input(input_id, transcript=transcript)
-                except BaseException as exc:
-                    store.finish_input(input_id, diagnostic=str(exc))
+                    try:
+                        transcript = stt.transcribe(recording)
+                    except BaseException as exc:
+                        try:
+                            store.finish_input(input_id, diagnostic=str(exc))
+                        finally:
+                            notify_input_feedback(binding_id, capture_id, "failed")
+                    else:
+                        store.finish_input(input_id, transcript=transcript)
+                        notify_input_feedback(binding_id, capture_id, "ready")
                 finally:
                     recording.unlink(missing_ok=True)
                     with transcription_lock:

@@ -136,20 +136,27 @@ to speaking intensity. This prevents a tool pulse from fighting the waveform.
 
 ## Input status contract
 
-`voice-input` is a UI status lane for local capture and delivery. Its states
-are not replacements for activity states:
+`input-state` is an internal, binding-scoped UI lane for local capture,
+inference, and delivery. Its states are not replacements for activity states:
 
 ```text
-idle -> listening -> transcribing
-transcribing -> clipboard-ready
-transcribing -> submitting -> target-response
-transcribing -> error
+idle -> recording -> transcribing -> ready -> delivered -> idle
+recording | transcribing | ready -> failed -> idle
+recording -> cancelled -> idle
 ```
 
-The current Orb may display `listening`, `transcribing`, `submitting`,
-`target-response`, `clipboard-ready`, and `error`. Input errors may share the
-string `error` with activity in the UI, but they remain separate events and
-must not be interpreted as a host/model failure.
+Every transition carries the stable binding id and capture id. Terminal events
+remove only that capture, so a slow completion cannot overwrite a newer
+recording on the same binding. `ready` means inference succeeded and delivery
+is pending; `delivered` means the adapter acknowledged clipboard copy or
+app-server submission. Terminal feedback is ephemeral and is not replayed
+after runtime restart.
+
+The central renderer host owns the input overlay for both built-in and Live2D
+windows. Targeting/move uses a cyan edge, resize uses an amber edge with corner
+markers, recording uses a red pulse, transcription uses a violet pulse,
+delivery-ready uses amber, successful delivery flashes green, and failure
+flashes red. These effects never alter semantic model parameters.
 
 ## Transition guidance
 

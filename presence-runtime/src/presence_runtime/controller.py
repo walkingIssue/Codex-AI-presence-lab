@@ -38,6 +38,8 @@ class RendererConsumer(Protocol):
 
     def activity_event(self, event: Mapping[str, Any]) -> bool: ...
 
+    def input_event(self, event: Mapping[str, Any]) -> bool: ...
+
     def apply_presentation(self, cue: PresentationCue) -> str: ...
 
     def cancel_presentation(self, binding_id: str) -> bool: ...
@@ -53,6 +55,7 @@ class RecordingRenderer:
     def __init__(self) -> None:
         self.snapshots: dict[str, EffectiveSnapshot] = {}
         self.activities: list[dict[str, Any]] = []
+        self.inputs: list[dict[str, Any]] = []
         self.presentations: list[PresentationCue] = []
         self.cancelled_presentations: list[str] = []
         self.playback: list[dict[str, Any]] = []
@@ -71,6 +74,11 @@ class RecordingRenderer:
     def activity_event(self, event: Mapping[str, Any]) -> bool:
         if self.ready:
             self.activities.append(dict(event))
+        return self.ready
+
+    def input_event(self, event: Mapping[str, Any]) -> bool:
+        if self.ready:
+            self.inputs.append(dict(event))
         return self.ready
 
     def apply_presentation(self, cue: PresentationCue) -> str:
@@ -690,6 +698,22 @@ class RuntimeController:
                 "commentary_ratio": snapshot.tts.commentary_ratio,
             },
         )
+
+    def input_event(
+        self,
+        *,
+        binding_id: str,
+        capture_id: str,
+        state: str,
+    ) -> bool:
+        if state not in {"recording", "transcribing", "ready", "delivered", "failed", "cancelled"}:
+            raise ValidationError(f"unsupported voice input state: {state!r}")
+        event = {
+            "binding_id": binding_id,
+            "capture_id": capture_id,
+            "state": state,
+        }
+        return self.renderer.input_event(event)
 
     def play_next(self) -> dict[str, Any] | None:
         item = self.store.claim_next_speech()

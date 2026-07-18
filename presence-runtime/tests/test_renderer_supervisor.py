@@ -47,7 +47,7 @@ for line in sys.stdin:
                     "renderer_key": snapshot["avatar_ref"],
                 },
             }
-    elif kind in {"event", "activity"}:
+    elif kind in {"event", "activity", "input-state"}:
         response = {"type": "response", "id": command["id"], "ok": True, "result": {"routed": True}}
     elif kind == "presentation":
         cue = command["cue"]
@@ -124,6 +124,13 @@ for line in sys.stdin:
             "state": "thinking",
             "binding_id": binding["binding_id"],
             "event_id": "activity:1",
+        }
+    ) is True
+    assert renderer.input_event(
+        {
+            "binding_id": binding["binding_id"],
+            "capture_id": "capture-1",
+            "state": "transcribing",
         }
     ) is True
     cue = PresentationCue(

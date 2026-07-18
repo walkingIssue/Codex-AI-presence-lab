@@ -6,6 +6,62 @@ let snapshotCallback = null;
 let eventCallback = null;
 let presentationCallback = null;
 let presentationCancelCallback = null;
+const INPUT_FEEDBACK_PHASES = new Set([
+  "idle",
+  "targeted",
+  "move",
+  "resize",
+  "recording",
+  "transcribing",
+  "ready",
+  "delivered",
+  "failed",
+]);
+let runtimeFeedbackPhase = "idle";
+let pointerFeedbackPhase = "idle";
+
+function ensureInputFeedback() {
+  let feedback = document.getElementById("presence-input-feedback");
+  if (feedback) return feedback;
+  feedback = document.createElement("div");
+  feedback.id = "presence-input-feedback";
+  feedback.setAttribute("aria-hidden", "true");
+  (document.body || document.documentElement)?.appendChild(feedback);
+  return feedback;
+}
+
+function renderInputFeedback() {
+  if (!document.documentElement) return;
+  const interactionActive = pointerFeedbackPhase === "move" || pointerFeedbackPhase === "resize";
+  const phase = interactionActive
+    ? pointerFeedbackPhase
+    : runtimeFeedbackPhase !== "idle"
+      ? runtimeFeedbackPhase
+      : pointerFeedbackPhase;
+  document.documentElement.dataset.presenceFeedback = phase;
+}
+
+function setRuntimeFeedback(phase) {
+  runtimeFeedbackPhase = INPUT_FEEDBACK_PHASES.has(phase) ? phase : "idle";
+  renderInputFeedback();
+}
+
+function setPointerFeedback(phase) {
+  pointerFeedbackPhase = INPUT_FEEDBACK_PHASES.has(phase) ? phase : "idle";
+  renderInputFeedback();
+}
+
+function updatePointerFeedback(event) {
+  if (windowInteraction) {
+    setPointerFeedback(windowInteraction.mode);
+    return;
+  }
+  if (event?.ctrlKey && event?.altKey) {
+    setPointerFeedback(event.shiftKey ? "resize" : "targeted");
+    return;
+  }
+  setPointerFeedback("idle");
+}
 
 ipcRenderer.on("presence-snapshot", async (_event, snapshot) => {
   if (typeof snapshotCallback !== "function") {
@@ -192,14 +248,18 @@ async function stopVoiceCapture(discard = false) {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  ensureInputFeedback();
+  renderInputFeedback();
   document.addEventListener("contextmenu", (event) => {
     if (event.ctrlKey && event.altKey) event.preventDefault();
   });
   document.addEventListener("pointerdown", startVoiceCapture, true);
   document.addEventListener("pointerdown", (event) => {
+    updatePointerFeedback(event);
     if (event.button !== 0 || !event.ctrlKey || !event.altKey || windowInteraction) return;
     event.preventDefault();
     windowInteraction = { mode: event.shiftKey ? "resize" : "move" };
+    setPointerFeedback(windowInteraction.mode);
     ipcRenderer.send("presence-window-interaction", {
       phase: "start",
       mode: windowInteraction.mode,
@@ -208,6 +268,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }, true);
   document.addEventListener("pointermove", (event) => {
+    updatePointerFeedback(event);
     if (!windowInteraction) return;
     ipcRenderer.send("presence-window-interaction", {
       phase: "update",
@@ -224,6 +285,7 @@ window.addEventListener("DOMContentLoaded", () => {
       windowInteraction = null;
       ipcRenderer.send("presence-window-interaction", { phase: "end" });
     }
+    updatePointerFeedback(event);
   }, true);
   document.addEventListener("pointercancel", () => {
     voicePointerHeld = false;
@@ -232,6 +294,11 @@ window.addEventListener("DOMContentLoaded", () => {
       windowInteraction = null;
       ipcRenderer.send("presence-window-interaction", { phase: "end" });
     }
+    setPointerFeedback("idle");
+  }, true);
+  document.addEventListener("pointerenter", updatePointerFeedback, true);
+  document.addEventListener("pointerleave", () => {
+    if (!windowInteraction) setPointerFeedback("idle");
   }, true);
   document.addEventListener("keyup", (event) => {
     if (event.key === "Control" || event.key === "Alt") {
@@ -241,10 +308,12 @@ window.addEventListener("DOMContentLoaded", () => {
         windowInteraction = null;
         ipcRenderer.send("presence-window-interaction", { phase: "end" });
       }
+      setPointerFeedback("idle");
     }
     if (event.key === "Escape") {
       voicePointerHeld = false;
       if (voiceRecorder) void stopVoiceCapture(true);
+      setPointerFeedback("idle");
     }
   }, true);
   window.addEventListener("blur", () => {
@@ -254,7 +323,12 @@ window.addEventListener("DOMContentLoaded", () => {
       windowInteraction = null;
       ipcRenderer.send("presence-window-interaction", { phase: "end" });
     }
+    setPointerFeedback("idle");
   });
+});
+
+ipcRenderer.on("presence-input-state", (_event, state) => {
+  setRuntimeFeedback(state?.phase);
 });
 
 ipcRenderer.on("presence-input-policy", (_event, policy) => {

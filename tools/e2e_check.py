@@ -173,9 +173,21 @@ def validate_static_contracts(
         raise SystemExit("Managed rollout adapter owns state beyond cursors/diagnostics")
 
     renderer = (presence / "renderer-host" / "main.cjs").read_text(encoding="utf-8")
-    for token in ("snapshot.binding_id", "event.utterance_id", "renderer/ready"):
+    for token in (
+        "snapshot.binding_id",
+        "event.utterance_id",
+        "renderer/ready",
+        'command.type === "input-state"',
+    ):
         if token not in renderer:
             raise SystemExit(f"Central renderer omitted binding contract token: {token}")
+    input_feedback = presence / "renderer-host" / "input_feedback.css"
+    if not input_feedback.is_file():
+        raise SystemExit("Central renderer omitted the model-independent input overlay")
+    feedback_css = input_feedback.read_text(encoding="utf-8")
+    for phase in ("recording", "transcribing", "ready", "delivered", "failed"):
+        if f'data-presence-feedback="{phase}"' not in feedback_css:
+            raise SystemExit(f"Input overlay omitted the {phase!r} visual state")
     live2d_renderer = (
         live2d
         / "src"

@@ -226,6 +226,12 @@ pauses that binding’s current voice; release stops capture, transcription is
 delivered to the same binding, and buffered playback resumes cleanly. Escape,
 modifier release, focus loss, window close, or a failed capture cancels safely.
 
+The renderer edge confirms the exact targeted binding: cyan for targeting or
+movement, amber corner markers for resizing, red while recording, violet while
+STT inference runs, amber while delivery is pending, green after delivery, and
+red on failure. Input feedback is model-independent and must never be
+implemented by mutating a Live2D profile or semantic action.
+
 Ctrl+Alt+left drag repositions a window. Ctrl+Alt+Shift+left drag resizes it.
 Geometry is keyed by binding id and survives avatar swaps and runtime restarts.
 

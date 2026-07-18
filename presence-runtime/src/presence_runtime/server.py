@@ -286,7 +286,14 @@ class RuntimeProtocolHandler:
             input_id = message["input_id"]
             if not isinstance(input_id, str) or not input_id:
                 raise ValidationError("input_id must be a non-empty string")
-            self.controller.store.acknowledge_input(context.binding_id, input_id)
+            acknowledged = self.controller.store.acknowledge_input(
+                context.binding_id, input_id
+            )
+            self.controller.input_event(
+                binding_id=context.binding_id,
+                capture_id=acknowledged["capture_id"],
+                state="delivered",
+            )
             return {"type": "input/acknowledged", "input_id": input_id}
         if message_type == "ping":
             self._require_fields(message, {"type"})

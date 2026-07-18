@@ -11,6 +11,7 @@ const net = require("net");
 const { fileURLToPath } = require("url");
 const { acceptEffectiveSnapshot } = require("./snapshot_contract.cjs");
 const { acceptPresentationCue } = require("./presentation_contract.cjs");
+const { InputFeedbackRegistry } = require("./input_feedback.cjs");
 const { WindowRegistry } = require("./window_registry.cjs");
 const { interactionBounds } = require("./interaction_geometry.cjs");
 const {
@@ -21,6 +22,12 @@ const {
 const registry = new WindowRegistry();
 const waiters = new Map();
 const latestEvents = new Map();
+const inputFeedback = new InputFeedbackRegistry();
+const inputFeedbackTimers = new Map();
+const inputFeedbackCss = fs.readFileSync(
+  path.join(__dirname, "input_feedback.css"),
+  "utf8",
+);
 const catalogRoot = path.resolve(process.env.CODEX_PRESENCE_CATALOG || "");
 let udpPort = Number(process.env.CODEX_PRESENCE_UDP_PORT || 17839);
 let udp = null;
@@ -31,6 +38,7 @@ const inputRoot = path.resolve(process.env.CODEX_PRESENCE_INPUT_ROOT || "");
 const captures = new Map();
 const interactions = new Map();
 const MAX_RECORDING_BYTES = 25 * 1024 * 1024;
+const INPUT_FEEDBACK_FLASH_MS = 900;
 const rendererUserData = path.join(
   os.tmpdir(),
   `codex-presence-renderer-host-${process.pid}`,
@@ -135,6 +143,37 @@ function recordForSender(senderId) {
   return null;
 }
 
+function clearInputFeedbackTimer(bindingId) {
+  const timer = inputFeedbackTimers.get(bindingId);
+  if (timer) clearTimeout(timer);
+  inputFeedbackTimers.delete(bindingId);
+}
+
+function publishInputFeedback(bindingId, view = inputFeedback.view(bindingId)) {
+  const record = registry.current(bindingId);
+  if (!record || record.window.isDestroyed()) return false;
+  record.window.webContents.send("presence-input-state", view);
+  return true;
+}
+
+function routeInputState(event) {
+  const result = inputFeedback.update(event);
+  const bindingId = result.view.binding_id;
+  if (!result.changed) return publishInputFeedback(bindingId, result.view);
+  clearInputFeedbackTimer(bindingId);
+  const routed = publishInputFeedback(bindingId, result.view);
+  if (result.view.flash_token) {
+    const token = result.view.flash_token;
+    const timer = setTimeout(() => {
+      inputFeedbackTimers.delete(bindingId);
+      const settled = inputFeedback.settle(bindingId, token);
+      if (settled) publishInputFeedback(bindingId, settled);
+    }, INPUT_FEEDBACK_FLASH_MS);
+    inputFeedbackTimers.set(bindingId, timer);
+  }
+  return routed;
+}
+
 function safeCapturePath(captureId) {
   if (!inputRoot || !/^[a-zA-Z0-9_-]{1,80}$/.test(captureId)) {
     throw new Error("voice input capture id or root is invalid");
@@ -145,8 +184,13 @@ function safeCapturePath(captureId) {
   return destination;
 }
 
-function emitCaptureCancel(capture, reason) {
+function emitCaptureCancel(capture, reason, feedbackState = "cancelled") {
   if (!capture) return;
+  routeInputState({
+    binding_id: capture.bindingId,
+    capture_id: capture.captureId,
+    state: feedbackState,
+  });
   emit({
     type: "renderer/input",
     state: "capture-cancel",
@@ -187,6 +231,11 @@ ipcMain.handle("presence-input-start", (event, payload) => {
   const captureId = String(payload?.capture_id || crypto.randomUUID());
   safeCapturePath(captureId);
   captures.set(event.sender.id, { captureId, bindingId: record.bindingId });
+  routeInputState({
+    binding_id: record.bindingId,
+    capture_id: captureId,
+    state: "recording",
+  });
   emit({
     type: "renderer/input",
     state: "capture-start",
@@ -200,13 +249,13 @@ ipcMain.handle("presence-input-finish", async (event, payload) => {
   const capture = captures.get(event.sender.id);
   captures.delete(event.sender.id);
   if (!capture || payload?.capture_id !== capture.captureId) {
-    emitCaptureCancel(capture, "capture identity mismatch");
+    emitCaptureCancel(capture, "capture identity mismatch", "failed");
     return { ok: false, error: "capture_identity_mismatch" };
   }
   try {
     const bytes = Buffer.from(payload?.bytes || []);
     if (!bytes.length || bytes.length > MAX_RECORDING_BYTES) {
-      emitCaptureCancel(capture, "recording size invalid");
+      emitCaptureCancel(capture, "recording size invalid", "failed");
       return { ok: false, error: "recording_size_invalid" };
     }
     const destination = safeCapturePath(capture.captureId);
@@ -221,9 +270,14 @@ ipcMain.handle("presence-input-finish", async (event, payload) => {
       capture_id: capture.captureId,
       recording: destination,
     });
+    routeInputState({
+      binding_id: capture.bindingId,
+      capture_id: capture.captureId,
+      state: "transcribing",
+    });
     return { ok: true };
   } catch (error) {
-    emitCaptureCancel(capture, error?.message || error);
+    emitCaptureCancel(capture, error?.message || error, "failed");
     throw error;
   }
 });
@@ -383,6 +437,7 @@ async function createReplacement(command, previous) {
     } else {
       await window.loadURL(safeLive2dUrl(command.resource));
     }
+    await window.webContents.insertCSS(inputFeedbackCss, { cssOrigin: "user" });
     await ready;
     await applyToWindow(record, snapshot);
     record.ready = true;
@@ -390,6 +445,7 @@ async function createReplacement(command, previous) {
     const state = latestEvents.get(snapshot.binding_id);
     if (state?.activity) window.webContents.send("presence-event", state.activity);
     if (state?.playback) window.webContents.send("presence-event", state.playback);
+    window.webContents.send("presence-input-state", inputFeedback.view(snapshot.binding_id));
     if (record.active && snapshot.renderer.visible) window.showInactive();
 
     const reportGeometry = () => {
@@ -570,10 +626,17 @@ async function handle(command) {
   if (command.type === "presentation-cancel") {
     return cancelPresentation(command.binding_id);
   }
+  if (command.type === "input-state") {
+    return { routed: routeInputState(command.event) };
+  }
   if (command.type === "binding-state") {
     const record = registry.current(command.binding_id);
     if (!record) return { found: false };
     record.active = Boolean(command.active);
+    if (!record.active) {
+      clearInputFeedbackTimer(command.binding_id);
+      publishInputFeedback(command.binding_id, inputFeedback.clear(command.binding_id));
+    }
     if (record.active && record.snapshot?.renderer.visible) record.window.showInactive();
     else record.window.hide();
     return { found: true, active: record.active };
@@ -589,7 +652,10 @@ async function handle(command) {
   }
   if (command.type === "remove") {
     latestEvents.delete(command.binding_id);
-    return { removed: registry.remove(command.binding_id) };
+    clearInputFeedbackTimer(command.binding_id);
+    const removed = registry.remove(command.binding_id);
+    inputFeedback.remove(command.binding_id);
+    return { removed };
   }
   if (command.type === "status") {
     const records = [...registry.records.values()].map((record) => ({
@@ -601,6 +667,7 @@ async function handle(command) {
       always_on_top: !record.window.isDestroyed() && record.window.isAlwaysOnTop(),
       presentation_sequence: record.presentationSequence,
       presentation_status: record.presentationStatus,
+      input_feedback: inputFeedback.view(record.bindingId),
     }));
     return { root_pid: process.pid, udp_port: udpPort, windows: records };
   }
