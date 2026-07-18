@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import queue
+import socket
 import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .catalog import Catalog
 from .models import EffectiveSnapshot
@@ -28,19 +29,30 @@ class ElectronRendererSupervisor:
         store: PresenceStore,
         command: Sequence[str] | None = None,
         udp_port: int = 17839,
+        input_enabled: bool = False,
+        input_root: Path | None = None,
+        input_handler: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         self.host_root = host_root.expanduser().resolve()
         self.catalog = catalog
         self.store = store
         self.udp_port = udp_port
         self.command = list(command) if command is not None else self._default_command()
+        self.socket_control = command is None
+        self.input_enabled = input_enabled
+        self.input_root = input_root
+        self.input_handler = input_handler
         self.process: subprocess.Popen[str] | None = None
         self._ready = threading.Event()
         self._responses: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._responses_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._reader: threading.Thread | None = None
+        self._stdout_reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
+        self._control_socket: socket.socket | None = None
+        self._control_reader: Any | None = None
+        self._control_writer: Any | None = None
         self._acknowledged: dict[str, int] = {}
         self._last_error: str | None = None
 
@@ -86,6 +98,20 @@ class ElectronRendererSupervisor:
         environment = os.environ.copy()
         environment["CODEX_PRESENCE_CATALOG"] = str(self.catalog.root)
         environment["CODEX_PRESENCE_UDP_PORT"] = str(self.udp_port)
+        environment["CODEX_PRESENCE_INPUT_ENABLED"] = "1" if self.input_enabled else "0"
+        if self.input_root is not None:
+            environment["CODEX_PRESENCE_INPUT_ROOT"] = str(self.input_root)
+        listener: socket.socket | None = None
+        control_token: str | None = None
+        if self.socket_control:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(0.2)
+            control_token = uuid.uuid4().hex
+            environment["CODEX_PRESENCE_CONTROL_PORT"] = str(listener.getsockname()[1])
+            environment["CODEX_PRESENCE_CONTROL_TOKEN"] = control_token
         try:
             self.process = subprocess.Popen(
                 self.command,
@@ -99,14 +125,68 @@ class ElectronRendererSupervisor:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except OSError as exc:
+            if listener is not None:
+                listener.close()
             self._last_error = str(exc)
             self.process = None
             return False
+        if listener is not None:
+            connection: socket.socket | None = None
+            deadline = __import__("time").monotonic() + timeout
+            try:
+                while __import__("time").monotonic() < deadline:
+                    if self.process.poll() is not None:
+                        raise RuntimeError(
+                            f"renderer host exited before control registration ({self.process.returncode})"
+                        )
+                    try:
+                        connection, _address = listener.accept()
+                        break
+                    except TimeoutError:
+                        continue
+                if connection is None:
+                    raise RuntimeError("renderer control registration timed out")
+                remaining = max(0.1, deadline - __import__("time").monotonic())
+                connection.settimeout(remaining)
+                reader = connection.makefile("r", encoding="utf-8", newline="\n")
+                writer = connection.makefile("w", encoding="utf-8", newline="\n")
+                registration = json.loads(reader.readline() or "{}")
+                if (
+                    registration.get("type") != "renderer/auth"
+                    or registration.get("token") != control_token
+                ):
+                    raise RuntimeError("renderer control authentication failed")
+                connection.settimeout(None)
+                self._control_socket = connection
+                self._control_reader = reader
+                self._control_writer = writer
+            except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
+                if connection is not None:
+                    connection.close()
+                self._last_error = str(exc)
+                listener.close()
+                self.close()
+                return False
+            finally:
+                listener.close()
         self._ready.clear()
         self._reader = threading.Thread(
-            target=self._read_stdout,
-            name="presence-renderer-stdout",
+            target=(
+                self._read_control
+                if self._control_reader is not None
+                else self._read_stdout
+            ),
+            name="presence-renderer-control",
             daemon=True,
+        )
+        self._stdout_reader = (
+            threading.Thread(
+                target=self._drain_stdout,
+                name="presence-renderer-stdout",
+                daemon=True,
+            )
+            if self._control_reader is not None
+            else None
         )
         self._stderr_reader = threading.Thread(
             target=self._read_stderr,
@@ -114,6 +194,8 @@ class ElectronRendererSupervisor:
             daemon=True,
         )
         self._reader.start()
+        if self._stdout_reader is not None:
+            self._stdout_reader.start()
         self._stderr_reader.start()
         if not self._ready.wait(timeout):
             self._last_error = "renderer host readiness timed out"
@@ -125,7 +207,15 @@ class ElectronRendererSupervisor:
         process = self.process
         if process is None or process.stdout is None:
             return
-        for line in process.stdout:
+        self._read_messages(process.stdout)
+
+    def _read_control(self) -> None:
+        reader = self._control_reader
+        if reader is not None:
+            self._read_messages(reader)
+
+    def _read_messages(self, stream: Any) -> None:
+        for line in stream:
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
@@ -133,6 +223,10 @@ class ElectronRendererSupervisor:
             if not isinstance(message, dict):
                 continue
             message_type = message.get("type")
+            if message_type == "renderer/error":
+                self._last_error = str(message.get("error") or "renderer host failed")
+                self._ready.clear()
+                continue
             if message_type == "renderer/ready":
                 self.udp_port = int(message.get("udp_port", self.udp_port))
                 self._ready.set()
@@ -146,6 +240,13 @@ class ElectronRendererSupervisor:
                     except Exception as exc:
                         self._last_error = str(exc)
                 continue
+            if message_type == "renderer/input":
+                if self.input_handler is not None:
+                    try:
+                        self.input_handler(message)
+                    except Exception as exc:
+                        self._last_error = str(exc)
+                continue
             if message_type == "response":
                 request_id = message.get("id")
                 if not isinstance(request_id, str):
@@ -155,6 +256,15 @@ class ElectronRendererSupervisor:
                 if target is not None:
                     target.put(message)
         self._ready.clear()
+
+    def _drain_stdout(self) -> None:
+        process = self.process
+        if process is None or process.stdout is None:
+            return
+        for line in process.stdout:
+            stripped = line.strip()
+            if stripped:
+                self._last_error = stripped[-2048:]
 
     def _read_stderr(self) -> None:
         process = self.process
@@ -174,8 +284,9 @@ class ElectronRendererSupervisor:
         if not self.start(timeout=timeout):
             raise RuntimeError(self._last_error or "renderer host is unavailable")
         process = self.process
-        if process is None or process.stdin is None:
-            raise RuntimeError("renderer host stdin is unavailable")
+        writer = self._control_writer or (process.stdin if process is not None else None)
+        if process is None or writer is None:
+            raise RuntimeError("renderer host control channel is unavailable")
         request_id = str(uuid.uuid4())
         response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self._responses_lock:
@@ -183,10 +294,10 @@ class ElectronRendererSupervisor:
         try:
             payload = {"id": request_id, **dict(document)}
             with self._write_lock:
-                process.stdin.write(
+                writer.write(
                     json.dumps(payload, separators=(",", ":")) + "\n"
                 )
-                process.stdin.flush()
+                writer.flush()
             response = response_queue.get(timeout=timeout)
         except queue.Empty as exc:
             raise RuntimeError("renderer host response timed out") from exc
@@ -222,6 +333,9 @@ class ElectronRendererSupervisor:
                     "resource": self._resource(snapshot),
                     "geometry": self.store.geometry(snapshot.binding_id),
                     "active": binding["state"] == "active",
+                    # Eligibility is per binding; the separate machine policy
+                    # gates it dynamically without requiring a snapshot swap.
+                    "input_allowed": binding["scope"] == "session",
                 }
             )
         except Exception as exc:
@@ -276,6 +390,17 @@ class ElectronRendererSupervisor:
         self._acknowledged.pop(binding_id, None)
         return bool(result.get("removed"))
 
+    def set_input_enabled(self, enabled: bool) -> bool:
+        self.input_enabled = bool(enabled)
+        try:
+            result = self._request(
+                {"type": "input-policy", "enabled": self.input_enabled}, timeout=5
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            return False
+        return result.get("enabled") == self.input_enabled
+
     def status(self, binding_id: str | None = None) -> Mapping[str, Any]:
         process = self.process
         running = process is not None and process.poll() is None
@@ -302,19 +427,30 @@ class ElectronRendererSupervisor:
         process = self.process
         self.process = None
         self._ready.clear()
-        if process is None:
-            return
-        if process.poll() is None and process.stdin is not None:
+        reader = self._reader
+        stdout_reader = self._stdout_reader
+        stderr_reader = self._stderr_reader
+        self._reader = None
+        self._stdout_reader = None
+        self._stderr_reader = None
+        control_socket = self._control_socket
+        control_reader = self._control_reader
+        control_writer = self._control_writer
+        self._control_socket = None
+        self._control_reader = None
+        self._control_writer = None
+        writer = control_writer or (process.stdin if process is not None else None)
+        if process is not None and process.poll() is None and writer is not None:
             try:
                 request_id = str(uuid.uuid4())
-                process.stdin.write(
+                writer.write(
                     json.dumps(
                         {"id": request_id, "type": "shutdown"},
                         separators=(",", ":"),
                     )
                     + "\n"
                 )
-                process.stdin.flush()
+                writer.flush()
                 process.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 try:
@@ -325,9 +461,22 @@ class ElectronRendererSupervisor:
                         process.kill()
                     except OSError:
                         pass
-        for stream in (process.stdin, process.stdout, process.stderr):
+        for stream in (
+            control_reader,
+            control_writer,
+            *( (process.stdin, process.stdout, process.stderr) if process is not None else () ),
+        ):
             if stream is not None:
                 try:
                     stream.close()
                 except OSError:
                     pass
+        if control_socket is not None:
+            try:
+                control_socket.close()
+            except OSError:
+                pass
+        current = threading.current_thread()
+        for thread in (reader, stdout_reader, stderr_reader):
+            if thread is not None and thread is not current:
+                thread.join(timeout=2)

@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS projects (
     project_id TEXT PRIMARY KEY,
     normalized_root TEXT NOT NULL UNIQUE,
     display_root TEXT NOT NULL,
+    registered INTEGER NOT NULL DEFAULT 1 CHECK (registered IN (0, 1)),
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -172,6 +173,20 @@ CREATE TABLE IF NOT EXISTS migration_ledger (
     started_at REAL NOT NULL,
     completed_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS input_transcripts (
+    input_id TEXT PRIMARY KEY,
+    binding_id TEXT NOT NULL REFERENCES bindings(binding_id) ON DELETE CASCADE,
+    capture_id TEXT NOT NULL UNIQUE,
+    transcript TEXT,
+    status TEXT NOT NULL CHECK (status IN ('transcribing', 'ready', 'delivered', 'failed')),
+    diagnostic TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_input_transcripts_ready
+    ON input_transcripts(binding_id, status, created_at);
 """
 
 
@@ -222,6 +237,14 @@ class PresenceStore:
             if str(mode).lower() != "wal":
                 raise ConflictError(f"Could not enable SQLite WAL mode: {mode}")
             self._connection.executescript(SCHEMA)
+            project_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(projects)")
+            }
+            if "registered" not in project_columns:
+                self._connection.execute(
+                    "ALTER TABLE projects ADD COLUMN registered INTEGER NOT NULL DEFAULT 1"
+                )
             now = time.time()
             self._connection.execute(
                 """
@@ -326,7 +349,7 @@ class PresenceStore:
         display: str,
     ) -> dict[str, Any]:
         row = connection.execute(
-            "SELECT * FROM projects WHERE normalized_root=?",
+            "SELECT * FROM projects WHERE normalized_root=? AND registered=1",
             (normalized,),
         ).fetchone()
         if row is None:
@@ -334,8 +357,10 @@ class PresenceStore:
             project_id = str(uuid.uuid4())
             connection.execute(
                 """
-                INSERT INTO projects(project_id, normalized_root, display_root, created_at, updated_at)
-                VALUES(?, ?, ?, ?, ?)
+                INSERT INTO projects(
+                    project_id, normalized_root, display_root, registered, created_at, updated_at
+                )
+                VALUES(?, ?, ?, 1, ?, ?)
                 """,
                 (project_id, normalized, display, now, now),
             )
@@ -351,6 +376,7 @@ class PresenceStore:
             "project_instance_id": row["project_id"],
             "normalized_root": row["normalized_root"],
             "project_root": row["display_root"],
+            "registered": bool(row["registered"]),
             "created_at": _utc_iso(row["created_at"]),
             "updated_at": _utc_iso(row["updated_at"]),
         }
@@ -367,7 +393,7 @@ class PresenceStore:
     def project_for_root(self, root: str | Path) -> dict[str, Any]:
         normalized, _display = normalize_project_root(root)
         row = self._connection.execute(
-            "SELECT * FROM projects WHERE normalized_root=?",
+            "SELECT * FROM projects WHERE normalized_root=? AND registered=1",
             (normalized,),
         ).fetchone()
         if row is None:
@@ -379,7 +405,7 @@ class PresenceStore:
         now = time.time()
         with self.transaction() as connection:
             existing = connection.execute(
-                "SELECT project_id FROM projects WHERE normalized_root=?",
+                "SELECT project_id FROM projects WHERE normalized_root=? AND registered=1",
                 (normalized,),
             ).fetchone()
             if existing is not None and existing["project_id"] != project_id:
@@ -387,13 +413,51 @@ class PresenceStore:
             changed = connection.execute(
                 """
                 UPDATE projects SET normalized_root=?, display_root=?, updated_at=?
-                WHERE project_id=?
+                WHERE project_id=? AND registered=1
                 """,
                 (normalized, display, now, project_id),
             ).rowcount
             if not changed:
                 raise NotFoundError(f"Project instance {project_id!r} is not registered")
         return self.project(project_id)
+
+    def list_projects(self, *, include_unregistered: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_unregistered else "WHERE registered=1"
+        rows = self._connection.execute(
+            f"SELECT * FROM projects {where} ORDER BY created_at"
+        ).fetchall()
+        return [self._project_document(row) for row in rows]
+
+    def unregister_project(self, project_id: str, *, force: bool = False) -> int:
+        active = [
+            source
+            for source in self.active_sources()
+            if source["project_instance_id"] == project_id
+        ]
+        if active and not force:
+            raise ConflictError(
+                f"Project {project_id} has active sources: "
+                + ", ".join(source["source_id"] for source in active)
+            )
+        bindings = self.list_bindings(project_id=project_id)
+        cancelled = 0
+        for binding in bindings:
+            cancelled += self.remove_binding(binding["binding_id"])
+        now = time.time()
+        with self.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE projects
+                SET normalized_root=?, registered=0, updated_at=?
+                WHERE project_id=? AND registered=1
+                """,
+                (f"unregistered:{project_id}", now, project_id),
+            ).rowcount
+            if not changed:
+                raise NotFoundError(
+                    f"Registered project instance {project_id!r} does not exist"
+                )
+        return cancelled
 
     def ensure_binding(
         self,
@@ -410,7 +474,7 @@ class PresenceStore:
         session_id: str | None,
     ) -> dict[str, Any]:
         project = connection.execute(
-            "SELECT project_id FROM projects WHERE project_id=?",
+            "SELECT project_id FROM projects WHERE project_id=? AND registered=1",
             (project_id,),
         ).fetchone()
         if project is None:
@@ -492,7 +556,7 @@ class PresenceStore:
         now = time.time()
         with self.transaction() as connection:
             if connection.execute(
-                "SELECT 1 FROM projects WHERE project_id=?",
+                "SELECT 1 FROM projects WHERE project_id=? AND registered=1",
                 (project_id,),
             ).fetchone() is None:
                 raise NotFoundError(f"Project instance {project_id!r} is not registered")
@@ -936,7 +1000,7 @@ class PresenceStore:
             if normalized_project is not None:
                 project_id, patch = normalized_project
                 if connection.execute(
-                    "SELECT 1 FROM projects WHERE project_id=?",
+                    "SELECT 1 FROM projects WHERE project_id=? AND registered=1",
                     (project_id,),
                 ).fetchone() is None:
                     raise NotFoundError(
@@ -1223,6 +1287,33 @@ class PresenceStore:
             ).fetchall()
         return [self._speech_document(row) for row in rows]
 
+    def speech_item(self, queue_id: int) -> dict[str, Any]:
+        row = self._connection.execute(
+            "SELECT * FROM speech_queue WHERE queue_id=?", (queue_id,)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Speech queue item {queue_id} does not exist")
+        return self._speech_document(row)
+
+    def speech_statuses(
+        self, binding_id: str, event_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        if not event_ids:
+            return {}
+        if len(event_ids) > 1024 or any(
+            not isinstance(item, str) or not item for item in event_ids
+        ):
+            raise ValidationError("speech status event_ids must be a bounded string list")
+        placeholders = ",".join("?" for _ in event_ids)
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM speech_queue
+            WHERE binding_id=? AND event_id IN ({placeholders})
+            """,
+            (binding_id, *event_ids),
+        ).fetchall()
+        return {row["event_id"]: self._speech_document(row) for row in rows}
+
     def update_speech_status(
         self,
         queue_id: int,
@@ -1245,6 +1336,47 @@ class PresenceStore:
             if not changed:
                 raise NotFoundError(f"Speech queue item {queue_id} does not exist")
 
+    def transition_speech_status(
+        self,
+        queue_id: int,
+        status: str,
+        *,
+        from_statuses: tuple[str, ...],
+        reason: str | None = None,
+    ) -> bool:
+        allowed = {"claimed", "playing", "paused", "finished", "cancelled", "failed"}
+        if status not in allowed or not from_statuses or any(
+            item not in allowed | {"queued"} for item in from_statuses
+        ):
+            raise ValidationError("speech transition contains an unsupported status")
+        placeholders = ",".join("?" for _ in from_statuses)
+        with self.transaction() as connection:
+            changed = connection.execute(
+                f"""
+                UPDATE speech_queue
+                SET status=?, cancel_reason=?, updated_at=?
+                WHERE queue_id=? AND status IN ({placeholders})
+                """,
+                (status, reason, time.time(), queue_id, *from_statuses),
+            ).rowcount
+        return bool(changed)
+
+    def cancel_speech_events(self, binding_id: str, event_ids: list[str]) -> int:
+        if not event_ids or any(not isinstance(item, str) or not item for item in event_ids):
+            raise ValidationError("speech cancellation requires non-empty event ids")
+        with self.transaction() as connection:
+            placeholders = ",".join("?" for _ in event_ids)
+            changed = connection.execute(
+                f"""
+                UPDATE speech_queue
+                SET status='cancelled', cancel_reason='source stream cancelled', updated_at=?
+                WHERE binding_id=? AND event_id IN ({placeholders})
+                  AND status IN ('queued', 'claimed', 'playing', 'paused')
+                """,
+                (time.time(), binding_id, *event_ids),
+            ).rowcount
+        return int(changed)
+
     def remove_binding(self, binding_id: str) -> int:
         now = time.time()
         with self.transaction() as connection:
@@ -1262,6 +1394,10 @@ class PresenceStore:
                 "UPDATE sources SET connected=0 WHERE binding_id=?",
                 (binding_id,),
             )
+            connection.execute(
+                "DELETE FROM catalog_references WHERE binding_id=?",
+                (binding_id,),
+            )
             cancelled = connection.execute(
                 """
                 UPDATE speech_queue
@@ -1272,6 +1408,14 @@ class PresenceStore:
                 """,
                 (now, binding_id),
             ).rowcount
+            connection.execute(
+                """
+                UPDATE input_transcripts
+                SET status='failed', diagnostic='binding removed', updated_at=?
+                WHERE binding_id=? AND status IN ('transcribing', 'ready')
+                """,
+                (now, binding_id),
+            )
         return int(cancelled)
 
     def set_activity(
@@ -1303,6 +1447,148 @@ class PresenceStore:
                 (activity, time.time(), binding_id),
             )
         return True
+
+    def focus_binding(self, binding_id: str) -> None:
+        binding = self.binding(binding_id)
+        if binding["state"] == "deleted":
+            raise ConflictError(f"Binding {binding_id} was removed")
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE attention_state
+                SET binding_id=?, state='focused', updated_at=?
+                WHERE singleton=1
+                """,
+                (binding_id, time.time()),
+            )
+
+    def attention(self) -> dict[str, Any]:
+        row = self._connection.execute(
+            "SELECT binding_id, utterance_id, state, updated_at FROM attention_state WHERE singleton=1"
+        ).fetchone()
+        return {
+            "binding_id": row["binding_id"],
+            "utterance_id": row["utterance_id"],
+            "state": row["state"],
+            "updated_at": _utc_iso(row["updated_at"]),
+        }
+
+    def begin_playback(self, binding_id: str, utterance_id: str) -> None:
+        binding = self.binding(binding_id)
+        if binding["state"] == "deleted":
+            raise ConflictError(f"Binding {binding_id} was removed")
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE attention_state
+                SET binding_id=?, utterance_id=?, state='speaking', updated_at=?
+                WHERE singleton=1
+                """,
+                (binding_id, utterance_id, time.time()),
+            )
+
+    def set_playback_attention(self, binding_id: str, state: str) -> dict[str, Any]:
+        if state not in {"paused", "speaking"}:
+            raise ValidationError("playback attention state must be paused or speaking")
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT binding_id, utterance_id, state FROM attention_state WHERE singleton=1"
+            ).fetchone()
+            if row["binding_id"] != binding_id or row["state"] not in {"speaking", "paused"}:
+                return {
+                    "changed": False,
+                    "binding_id": row["binding_id"],
+                    "utterance_id": row["utterance_id"],
+                    "state": row["state"],
+                }
+            connection.execute(
+                "UPDATE attention_state SET state=?, updated_at=? WHERE singleton=1",
+                (state, time.time()),
+            )
+        return {"changed": True, **self.attention()}
+
+    def finish_playback(self, binding_id: str, utterance_id: str) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE attention_state
+                SET binding_id=NULL, utterance_id=NULL, state='idle', updated_at=?
+                WHERE singleton=1 AND binding_id=? AND utterance_id=?
+                """,
+                (time.time(), binding_id, utterance_id),
+            )
+
+    def begin_input(self, binding_id: str, capture_id: str) -> str:
+        binding = self.binding(binding_id)
+        if binding["scope"] != "session" or binding["state"] == "deleted":
+            raise ValidationError("voice input requires an active session binding")
+        input_id = str(uuid.uuid4())
+        now = time.time()
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO input_transcripts(
+                    input_id, binding_id, capture_id, status, created_at, updated_at
+                ) VALUES(?, ?, ?, 'transcribing', ?, ?)
+                """,
+                (input_id, binding_id, capture_id, now, now),
+            )
+        return input_id
+
+    def finish_input(
+        self,
+        input_id: str,
+        *,
+        transcript: str | None = None,
+        diagnostic: str | None = None,
+    ) -> None:
+        if transcript is not None and (not isinstance(transcript, str) or not transcript.strip()):
+            raise ValidationError("voice input transcript must be non-empty")
+        status = "ready" if transcript is not None else "failed"
+        with self.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE input_transcripts
+                SET transcript=?, status=?, diagnostic=?, updated_at=?
+                WHERE input_id=? AND status='transcribing'
+                """,
+                (transcript.strip() if transcript else None, status, diagnostic, time.time(), input_id),
+            ).rowcount
+            if not changed:
+                raise NotFoundError(f"Active voice input {input_id!r} was not found")
+
+    def pending_inputs(self, binding_id: str) -> list[dict[str, Any]]:
+        self.binding(binding_id)
+        rows = self._connection.execute(
+            """
+            SELECT input_id, capture_id, transcript, created_at
+            FROM input_transcripts
+            WHERE binding_id=? AND status='ready'
+            ORDER BY created_at
+            """,
+            (binding_id,),
+        ).fetchall()
+        return [
+            {
+                "input_id": row["input_id"],
+                "capture_id": row["capture_id"],
+                "transcript": row["transcript"],
+                "created_at": _utc_iso(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def acknowledge_input(self, binding_id: str, input_id: str) -> None:
+        with self.transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE input_transcripts SET status='delivered', updated_at=?
+                WHERE binding_id=? AND input_id=? AND status='ready'
+                """,
+                (time.time(), binding_id, input_id),
+            ).rowcount
+            if not changed:
+                raise NotFoundError(f"Ready voice input {input_id!r} was not found")
 
     def begin_configuration_transaction(
         self,
@@ -1411,3 +1697,299 @@ class PresenceStore:
                     completed,
                 ),
             )
+
+    def import_legacy_configuration(
+        self,
+        *,
+        project_id: str,
+        source_hash: str,
+        project_patch: Mapping[str, Any],
+        session_patches: Mapping[str, Mapping[str, Any]],
+        geometry: Mapping[str, Mapping[str, Any]],
+        speech: list[Mapping[str, Any]],
+        details: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically persist one fully validated v0.1 import candidate.
+
+        Consumer acknowledgement happens after this database transaction.  The
+        returned checkpoint lets the migrator restore the exact prior sparse
+        configuration if either consumer rejects the candidate.
+        """
+
+        normalized_project = validate_patch(project_patch, path="migration.project")
+        normalized_sessions = {
+            _validate_session_id(session_id): validate_patch(
+                patch, path=f"migration.sessions.{session_id}"
+            )
+            for session_id, patch in session_patches.items()
+        }
+        for session_id, value in geometry.items():
+            _validate_session_id(session_id)
+            if set(value) - {"x", "y", "width", "height", "display_id", "visible"}:
+                raise ValidationError(
+                    f"migration geometry for {session_id} contains unknown fields"
+                )
+        now = time.time()
+        checkpoint: dict[str, Any] = {}
+        with self.transaction() as connection:
+            if connection.execute(
+                "SELECT 1 FROM projects WHERE project_id=? AND registered=1",
+                (project_id,),
+            ).fetchone() is None:
+                raise NotFoundError(f"Project instance {project_id!r} is not registered")
+            prior_default = connection.execute(
+                "SELECT patch_json FROM project_defaults WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            prior_bindings = connection.execute(
+                "SELECT * FROM bindings WHERE project_id=? AND state<>'deleted'",
+                (project_id,),
+            ).fetchall()
+            checkpoint = {
+                "project_default": (
+                    _decode_json(prior_default["patch_json"]) if prior_default else None
+                ),
+                "binding_ids": [row["binding_id"] for row in prior_bindings],
+                "session_overrides": {},
+                "geometry": {},
+                "imported_event_ids": [],
+            }
+            for binding in prior_bindings:
+                override = connection.execute(
+                    "SELECT patch_json FROM session_overrides WHERE binding_id=?",
+                    (binding["binding_id"],),
+                ).fetchone()
+                position = connection.execute(
+                    "SELECT geometry_json FROM renderer_geometry WHERE binding_id=?",
+                    (binding["binding_id"],),
+                ).fetchone()
+                checkpoint["session_overrides"][binding["binding_id"]] = (
+                    _decode_json(override["patch_json"]) if override else None
+                )
+                checkpoint["geometry"][binding["binding_id"]] = (
+                    _decode_json(position["geometry_json"]) if position else None
+                )
+
+            connection.execute(
+                """
+                INSERT INTO project_defaults(project_id, patch_json, updated_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    patch_json=excluded.patch_json,
+                    updated_at=excluded.updated_at
+                """,
+                (project_id, _canonical_json(normalized_project), now),
+            )
+            binding_by_session: dict[str, str] = {}
+            for session_id, patch in normalized_sessions.items():
+                binding = self._ensure_binding(connection, project_id, session_id)
+                binding_id = binding["binding_id"]
+                binding_by_session[session_id] = binding_id
+                connection.execute(
+                    """
+                    INSERT INTO session_overrides(binding_id, patch_json, updated_at)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(binding_id) DO UPDATE SET
+                        patch_json=excluded.patch_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (binding_id, _canonical_json(patch), now),
+                )
+            for session_id, position in geometry.items():
+                binding_id = binding_by_session.get(session_id)
+                if binding_id is None:
+                    binding = self._ensure_binding(connection, project_id, session_id)
+                    binding_id = binding["binding_id"]
+                    binding_by_session[session_id] = binding_id
+                connection.execute(
+                    """
+                    INSERT INTO renderer_geometry(binding_id, geometry_json, updated_at)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(binding_id) DO UPDATE SET
+                        geometry_json=excluded.geometry_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (binding_id, _canonical_json(dict(position)), now),
+                )
+            project_binding = self._ensure_binding(connection, project_id, None)["binding_id"]
+            imported = 0
+            for item in speech:
+                session_id = item.get("session_id")
+                if session_id is None:
+                    binding_id = project_binding
+                else:
+                    normalized_session = _validate_session_id(str(session_id))
+                    binding_id = binding_by_session.get(normalized_session)
+                    if binding_id is None:
+                        binding_id = self._ensure_binding(
+                            connection, project_id, normalized_session
+                        )["binding_id"]
+                        binding_by_session[normalized_session] = binding_id
+                event_id = str(item.get("event_id") or "")
+                utterance_id = str(item.get("utterance_id") or "")
+                text = item.get("text")
+                kind = item.get("kind")
+                tts = item.get("tts")
+                if not event_id or not utterance_id or not isinstance(text, str) or not text.strip():
+                    raise ValidationError("legacy speech item is incomplete")
+                if kind not in {"final", "announcement"} or not isinstance(tts, Mapping):
+                    raise ValidationError("legacy speech item has unsupported kind or TTS data")
+                if not self.record_event(
+                    event_id=event_id,
+                    source_id=None,
+                    binding_id=binding_id,
+                    event_type="speech:migrated",
+                    connection=connection,
+                ):
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO speech_queue(
+                        binding_id, effective_revision, utterance_id, event_id,
+                        text, kind, tts_json, status, created_at, updated_at
+                    ) VALUES(?, 0, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                    """,
+                    (
+                        binding_id,
+                        utterance_id,
+                        event_id,
+                        text,
+                        kind,
+                        _canonical_json(dict(tts)),
+                        now,
+                        now,
+                    ),
+                )
+                checkpoint["imported_event_ids"].append(event_id)
+                imported += 1
+            connection.execute(
+                """
+                INSERT INTO migration_ledger(
+                    project_id, source_hash, status, details_json, started_at, completed_at
+                ) VALUES(?, ?, 'pending', ?, ?, NULL)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    source_hash=excluded.source_hash,
+                    status='pending',
+                    details_json=excluded.details_json,
+                    started_at=excluded.started_at,
+                    completed_at=NULL
+                """,
+                (
+                    project_id,
+                    source_hash,
+                    _canonical_json({**dict(details), "checkpoint": checkpoint}),
+                    now,
+                ),
+            )
+        return {
+            "checkpoint": checkpoint,
+            "bindings": binding_by_session,
+            "project_binding_id": project_binding,
+            "imported_speech": imported,
+        }
+
+    def finalize_migrated_speech(self, event_ids: list[str]) -> None:
+        if not event_ids:
+            return
+        with self.transaction() as connection:
+            for event_id in event_ids:
+                connection.execute(
+                    """
+                    UPDATE speech_queue
+                    SET effective_revision=(
+                        SELECT effective_revision FROM bindings
+                        WHERE bindings.binding_id=speech_queue.binding_id
+                    ), updated_at=?
+                    WHERE event_id=?
+                    """,
+                    (time.time(), event_id),
+                )
+
+    def rollback_legacy_configuration(
+        self,
+        *,
+        project_id: str,
+        checkpoint: Mapping[str, Any],
+    ) -> None:
+        """Restore the sparse state captured by import_legacy_configuration."""
+
+        now = time.time()
+        prior_ids = set(checkpoint.get("binding_ids", ()))
+        with self.transaction() as connection:
+            previous_default = checkpoint.get("project_default")
+            if previous_default is None:
+                connection.execute(
+                    "DELETE FROM project_defaults WHERE project_id=?", (project_id,)
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO project_defaults(project_id, patch_json, updated_at)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(project_id) DO UPDATE SET
+                        patch_json=excluded.patch_json, updated_at=excluded.updated_at
+                    """,
+                    (project_id, _canonical_json(previous_default), now),
+                )
+            for binding_id, previous in checkpoint.get("session_overrides", {}).items():
+                if previous is None:
+                    connection.execute(
+                        "DELETE FROM session_overrides WHERE binding_id=?", (binding_id,)
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO session_overrides(binding_id, patch_json, updated_at)
+                        VALUES(?, ?, ?)
+                        ON CONFLICT(binding_id) DO UPDATE SET
+                            patch_json=excluded.patch_json, updated_at=excluded.updated_at
+                        """,
+                        (binding_id, _canonical_json(previous), now),
+                    )
+            for binding_id, previous in checkpoint.get("geometry", {}).items():
+                if previous is None:
+                    connection.execute(
+                        "DELETE FROM renderer_geometry WHERE binding_id=?", (binding_id,)
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO renderer_geometry(binding_id, geometry_json, updated_at)
+                        VALUES(?, ?, ?)
+                        ON CONFLICT(binding_id) DO UPDATE SET
+                            geometry_json=excluded.geometry_json, updated_at=excluded.updated_at
+                        """,
+                        (binding_id, _canonical_json(previous), now),
+                    )
+            for event_id in checkpoint.get("imported_event_ids", ()):
+                connection.execute("DELETE FROM speech_queue WHERE event_id=?", (event_id,))
+                connection.execute("DELETE FROM event_dedup WHERE event_id=?", (event_id,))
+            current = connection.execute(
+                "SELECT binding_id FROM bindings WHERE project_id=? AND state<>'deleted'",
+                (project_id,),
+            ).fetchall()
+            for row in current:
+                binding_id = row["binding_id"]
+                if binding_id not in prior_ids:
+                    connection.execute(
+                        "DELETE FROM session_overrides WHERE binding_id=?", (binding_id,)
+                    )
+                    connection.execute(
+                        "DELETE FROM renderer_geometry WHERE binding_id=?", (binding_id,)
+                    )
+                    has_source = connection.execute(
+                        "SELECT 1 FROM sources WHERE binding_id=? LIMIT 1", (binding_id,)
+                    ).fetchone()
+                    if has_source is None:
+                        # This binding did not exist before migration and has
+                        # no live source. Remove it transactionally so retry can
+                        # create the same logical project/session cleanly.
+                        connection.execute(
+                            "DELETE FROM speech_queue WHERE binding_id=?", (binding_id,)
+                        )
+                        connection.execute(
+                            "DELETE FROM event_dedup WHERE binding_id=?", (binding_id,)
+                        )
+                        connection.execute(
+                            "DELETE FROM bindings WHERE binding_id=?", (binding_id,)
+                        )

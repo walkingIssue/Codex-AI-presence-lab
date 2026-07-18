@@ -6,10 +6,9 @@
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test snapshot_contract.test.cjs window_registry.test.cjs"
+    "test": "node --test snapshot_contract.test.cjs window_registry.test.cjs interaction_geometry.test.cjs"
   },
   "devDependencies": {
     "electron": "43.1.0"
   }
 }
-

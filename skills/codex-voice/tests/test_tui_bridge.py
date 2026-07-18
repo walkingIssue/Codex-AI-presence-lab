@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -171,6 +172,74 @@ class TuiBridgeTests(unittest.TestCase):
             self.assertEqual(message["session_id"], "s")
             self.assertEqual(message["turn_id"], "t")
             self.assertEqual(message["volume"], 37)
+            adapter.close()
+
+    def test_v02_adapter_enqueues_each_visible_chunk_before_finish(self) -> None:
+        instances = []
+
+        class FakeRuntime:
+            @staticmethod
+            def available() -> bool:
+                return True
+
+            def __init__(self, project_root, *, adapter):
+                self.project_root = project_root
+                self.adapter = adapter
+                self.messages = []
+                self.cancelled = []
+                instances.append(self)
+
+            def start(self):
+                return None
+
+            def enqueue(self, message):
+                self.messages.append(dict(message))
+                return True
+
+            def cancel(self, session_id, event_ids):
+                self.cancelled.append((session_id, list(event_ids)))
+                return len(event_ids)
+
+            def close(self):
+                return None
+
+            def publish_activity(self, *_args, **_kwargs):
+                return True
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "tui_bridge.RuntimePlaybackAdapter", FakeRuntime
+        ):
+            root = Path(directory)
+            voice = root / ".codex-voice"
+            voice.mkdir()
+            adapter = ArbiterInboxAdapter(root, voice)
+            self.assertTrue(adapter.start())
+            self.assertTrue(
+                adapter.send(
+                    {
+                        "type": "start",
+                        "stream_id": "thread:turn",
+                        "session_id": "thread",
+                        "turn_id": "turn",
+                    }
+                )
+            )
+            self.assertTrue(
+                adapter.send(
+                    {"type": "delta", "stream_id": "thread:turn", "text": "Hello"}
+                )
+            )
+            self.assertEqual([item["text"] for item in instances[0].messages], ["Hello"])
+            self.assertTrue(
+                adapter.send(
+                    {"type": "delta", "stream_id": "thread:turn", "text": " world"}
+                )
+            )
+            self.assertEqual(
+                [item["text"] for item in instances[0].messages], ["Hello", " world"]
+            )
+            self.assertTrue(adapter.send({"type": "finish", "stream_id": "thread:turn"}))
+            self.assertEqual(len(instances[0].messages), 2)
             adapter.close()
 
     def test_item_completion_can_add_identity_missing_from_delta(self) -> None:

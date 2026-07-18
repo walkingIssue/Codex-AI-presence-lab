@@ -234,6 +234,22 @@ def main() -> int:
         return 2
 
     project_root = resolve_project_root(args.project_root)
+    from presence_compat import _presence, installed
+
+    if installed():
+        print(
+            "warning: uninstall.py is a v0.1 compatibility wrapper; unregistering only "
+            "this project through Presence Runtime v0.2"
+        )
+        return _presence(
+            [
+                "project",
+                "unregister",
+                "--project",
+                str(project_root),
+                "--all-sources",
+            ]
+        ).returncode
     voice_root = project_root / ".codex-voice"
     manifest_entries = read_runtime_manifest(voice_root)
     if manifest_entries is None:

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .controller import RuntimeController
-from .errors import PresenceError, ValidationError
+from .control import ControlAPI
+from .errors import ConflictError, PresenceError, ValidationError
 from .protocol import FramedConnection, RuntimeAddress, RuntimeListener
 
 
@@ -34,14 +35,24 @@ class ConnectionContext:
 
 
 class RuntimeProtocolHandler:
-    def __init__(self, controller: RuntimeController) -> None:
+    def __init__(
+        self,
+        controller: RuntimeController,
+        control_api: ControlAPI | None = None,
+        migrator: Any | None = None,
+    ) -> None:
         self.controller = controller
+        self.control_api = control_api
+        self.migrator = migrator
 
     def serve_connection(self, connection: FramedConnection) -> None:
         context: ConnectionContext | None = None
         try:
             first = connection.recv()
             if first is None:
+                return
+            if first.get("type") == "control":
+                self._serve_control(connection, first)
                 return
             try:
                 registration = self._register(first)
@@ -79,6 +90,50 @@ class RuntimeProtocolHandler:
                 self.controller.sync_binding_visibility()
             connection.close()
 
+    def _serve_control(
+        self,
+        connection: FramedConnection,
+        first: Mapping[str, Any],
+    ) -> None:
+        if self.control_api is None:
+            connection.send(
+                self._error(ValidationError("runtime control API is unavailable"))
+            )
+            return
+        if set(first) - {"type", "client"}:
+            connection.send(
+                self._error(ValidationError("control handshake contains unknown fields"))
+            )
+            return
+        connection.send({"type": "control/ready"})
+        while True:
+            request = connection.recv()
+            if request is None:
+                return
+            if request.get("type") == "disconnect":
+                connection.send({"type": "disconnected"})
+                return
+            try:
+                if set(request) != {"type", "operation", "arguments"}:
+                    raise ValidationError("control command fields are invalid")
+                if request["type"] != "command":
+                    raise ValidationError("control message must be command")
+                arguments = request["arguments"]
+                if not isinstance(arguments, dict):
+                    raise ValidationError("control command arguments must be an object")
+                result = self.control_api.execute(
+                    request["operation"],
+                    arguments,
+                )
+                response = {"type": "result", "result": result}
+            except PresenceError as exc:
+                response = self._error(exc)
+            except Exception as exc:
+                response = self._error(
+                    ConflictError(f"runtime command failed: {type(exc).__name__}: {exc}")
+                )
+            connection.send(response)
+
     def _register(self, message: Mapping[str, Any]) -> dict[str, Any]:
         allowed = {"type", "adapter", "project_root", "session_id", "capabilities"}
         unknown = set(message) - allowed
@@ -98,7 +153,22 @@ class RuntimeProtocolHandler:
             session_id=message.get("session_id"),
             capabilities=message["capabilities"],
         )
-        snapshot = self.controller.ensure_effective(registration["binding_id"])
+        try:
+            if self.migrator is not None:
+                project = self.controller.store.project(
+                    registration["project_instance_id"]
+                )
+                self.migrator.migrate_on_registration(
+                    registration["project_instance_id"],
+                    __import__("pathlib").Path(project["project_root"]),
+                )
+            snapshot = self.controller.ensure_effective(registration["binding_id"])
+        except PresenceError:
+            self.controller.store.disconnect_source(registration["source_id"])
+            raise
+        except BaseException as exc:
+            self.controller.store.disconnect_source(registration["source_id"])
+            raise ConflictError(f"automatic v0.1 migration failed: {exc}") from exc
         registration["effective_revision"] = snapshot.revision
         return registration
 
@@ -153,6 +223,16 @@ class RuntimeProtocolHandler:
                 "queue_id": queue_id,
                 "duplicate": queue_id is None,
             }
+        if message_type == "speech/cancel":
+            self._require_fields(message, {"type", "event_ids"})
+            event_ids = message["event_ids"]
+            if not isinstance(event_ids, list) or len(event_ids) > 1024:
+                raise ValidationError("speech cancellation event_ids must be a bounded list")
+            self.controller.store.assert_source_active(
+                context.source_id, binding_id=context.binding_id
+            )
+            cancelled = self.controller.cancel_speech(context.binding_id, event_ids)
+            return {"type": "speech/cancelled", "cancelled": cancelled}
         if message_type == "binding/status":
             self._require_fields(message, {"type"})
             binding = self.controller.store.binding(context.binding_id)
@@ -162,6 +242,49 @@ class RuntimeProtocolHandler:
                 "binding": binding,
                 "effective": snapshot.to_document() if snapshot else None,
             }
+        if message_type == "playback/pause":
+            self._require_fields(message, {"type"})
+            result = self.controller.pause_playback(context.binding_id)
+            return {"type": "playback/paused", **result}
+        if message_type == "playback/resume":
+            self._require_fields(message, {"type"})
+            result = self.controller.resume_playback(context.binding_id)
+            return {"type": "playback/resumed", **result}
+        if message_type == "playback/status":
+            self._require_fields(message, {"type"}, optional={"event_ids"})
+            self.controller.store.assert_source_active(
+                context.source_id, binding_id=context.binding_id
+            )
+            event_ids = message.get("event_ids", [])
+            if not isinstance(event_ids, list):
+                raise ValidationError("playback status event_ids must be a list")
+            return {
+                "type": "playback/status",
+                "binding_id": context.binding_id,
+                "attention": self.controller.store.attention(),
+                "speech": self.controller.store.speech_statuses(
+                    context.binding_id, event_ids
+                ),
+            }
+        if message_type == "input/poll":
+            self._require_fields(message, {"type"})
+            self.controller.store.assert_source_active(
+                context.source_id, binding_id=context.binding_id
+            )
+            return {
+                "type": "input/pending",
+                "items": self.controller.store.pending_inputs(context.binding_id),
+            }
+        if message_type == "input/ack":
+            self._require_fields(message, {"type", "input_id"})
+            self.controller.store.assert_source_active(
+                context.source_id, binding_id=context.binding_id
+            )
+            input_id = message["input_id"]
+            if not isinstance(input_id, str) or not input_id:
+                raise ValidationError("input_id must be a non-empty string")
+            self.controller.store.acknowledge_input(context.binding_id, input_id)
+            return {"type": "input/acknowledged", "input_id": input_id}
         if message_type == "ping":
             self._require_fields(message, {"type"})
             self.controller.store.assert_source_active(
@@ -175,8 +298,14 @@ class RuntimeProtocolHandler:
         raise ValidationError(f"unsupported adapter message type: {message_type!r}")
 
     @staticmethod
-    def _require_fields(message: Mapping[str, Any], allowed: set[str]) -> None:
-        unknown = set(message) - allowed
+    def _require_fields(
+        message: Mapping[str, Any],
+        allowed: set[str],
+        *,
+        optional: set[str] | None = None,
+    ) -> None:
+        optional = optional or set()
+        unknown = set(message) - allowed - optional
         missing = allowed - set(message)
         if unknown or missing:
             raise ValidationError(
@@ -202,10 +331,12 @@ class PresenceServer:
         controller: RuntimeController,
         *,
         address: RuntimeAddress | None = None,
+        control_api: ControlAPI | None = None,
+        migrator: Any | None = None,
     ) -> None:
         self.controller = controller
         self.listener = RuntimeListener(address)
-        self.handler = RuntimeProtocolHandler(controller)
+        self.handler = RuntimeProtocolHandler(controller, control_api, migrator)
         self._stop = threading.Event()
         self._threads: set[threading.Thread] = set()
         self._reaper: threading.Thread | None = None
@@ -220,7 +351,12 @@ class PresenceServer:
         self._reaper.start()
         try:
             while not self._stop.is_set():
-                connection = self.listener.accept()
+                try:
+                    connection = self.listener.accept()
+                except (OSError, EOFError):
+                    if self._stop.is_set():
+                        break
+                    raise
                 thread = threading.Thread(
                     target=self._serve_thread,
                     args=(connection,),
@@ -250,4 +386,13 @@ class PresenceServer:
 
     def stop(self) -> None:
         self._stop.set()
+        # Wake a blocking accept before closing the listener.  This is
+        # particularly important for multiprocessing AF_PIPE on Windows.
+        try:
+            from .protocol import connect
+
+            wake = connect(self.listener.address, timeout=0.2)
+            wake.close()
+        except (OSError, PresenceError):
+            pass
         self.listener.close()

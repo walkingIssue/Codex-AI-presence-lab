@@ -30,6 +30,7 @@ from cli_adapter import codex_executable, command_args, prepare_command
 from delivery import resolve_session_label
 from inbox import Inbox, SCHEMA as MESSAGE_SCHEMA, database_path, stable_event_id
 from profiles import ProfileRegistry
+from runtime_adapter import RuntimePlaybackAdapter
 
 
 BRIDGE_SCHEMA = "codex-voice/tui-bridge/v0.1"
@@ -196,24 +197,33 @@ def configured_volume(voice_root: Path) -> int:
 
 
 class ArbiterInboxAdapter:
-    """Route TUI output into the user-level singleton playback arbiter.
-
-    The adapter deliberately has no subprocess and never loads Kokoro.  It
-    buffers visible deltas per TUI stream, then commits one durable speech
-    envelope to the shared SQLite inbox when the visible assistant item is
-    complete.  The project watcher claims that envelope and sends it through
-    its already-warm PlaybackArbiter/TTSWorker.
-    """
+    """Route TUI chunks to v0.2, retaining the v0.1 inbox only as fallback."""
 
     def __init__(self, project_root: Path, voice_root: Path) -> None:
         self.project_root = project_root.resolve()
         self.voice_root = voice_root.resolve()
-        self.inbox = Inbox(database_path(self.voice_root))
-        self.profiles = ProfileRegistry(self.project_root, self.voice_root)
         self.streams: dict[str, dict[str, object]] = {}
         self.started = False
+        self.runtime = (
+            RuntimePlaybackAdapter(self.project_root, adapter="codex-tui")
+            if RuntimePlaybackAdapter.available()
+            else None
+        )
+        self.inbox = (
+            None if self.runtime is not None else Inbox(database_path(self.voice_root))
+        )
+        self.profiles = (
+            None
+            if self.runtime is not None
+            else ProfileRegistry(self.project_root, self.voice_root)
+        )
 
     def start(self) -> bool:
+        if self.runtime is not None:
+            self.runtime.start()
+            self.started = True
+            log(self.voice_root, "TUI chunks routed directly to Presence Runtime v0.2")
+            return True
         try:
             enabled = (self.voice_root / "enabled").read_text(encoding="utf-8").strip().lower()
         except OSError:
@@ -233,13 +243,28 @@ class ArbiterInboxAdapter:
         if not stream_id:
             return False
         if event_type == "start":
-            self.streams[stream_id] = {"identity": dict(event), "parts": []}
+            self.streams[stream_id] = {
+                "identity": dict(event),
+                "parts": [],
+                "event_ids": [],
+                "chunk_index": 0,
+            }
             return True
         if event_type == "cancel":
-            self.streams.pop(stream_id, None)
+            stream = self.streams.pop(stream_id, None)
+            if self.runtime is not None and isinstance(stream, dict):
+                identity = stream.get("identity")
+                identity = identity if isinstance(identity, dict) else event
+                session_id = _text(identity.get("session_id"))
+                event_ids = stream.get("event_ids")
+                if isinstance(event_ids, list):
+                    self.runtime.cancel(session_id, [str(item) for item in event_ids])
             return True
         if event_type == "delta":
-            stream = self.streams.setdefault(stream_id, {"identity": dict(event), "parts": []})
+            stream = self.streams.setdefault(
+                stream_id,
+                {"identity": dict(event), "parts": [], "event_ids": [], "chunk_index": 0},
+            )
             parts = stream.get("parts")
             if not isinstance(parts, list):
                 parts = []
@@ -247,6 +272,36 @@ class ArbiterInboxAdapter:
             text = event.get("text")
             if isinstance(text, str) and text:
                 parts.append(text)
+                if self.runtime is not None:
+                    identity = stream.get("identity")
+                    identity = identity if isinstance(identity, dict) else event
+                    session_id = _text(identity.get("session_id"))
+                    turn_id = _text(identity.get("turn_id"))
+                    chunk_index = int(stream.get("chunk_index", 0))
+                    event_id = stable_event_id(
+                        "codex-tui-chunk",
+                        self.project_root,
+                        stream_id,
+                        chunk_index,
+                        text,
+                    )
+                    inserted = self.runtime.enqueue(
+                        {
+                            "event_id": event_id,
+                            "project_root": str(self.project_root),
+                            "session_id": session_id,
+                            "thread_id": session_id,
+                            "turn_id": turn_id,
+                            "kind": "final",
+                            "text": text,
+                            "sequence": chunk_index,
+                        }
+                    )
+                    stream["chunk_index"] = chunk_index + 1
+                    event_ids = stream.get("event_ids")
+                    if isinstance(event_ids, list):
+                        event_ids.append(event_id)
+                    return inserted
             return True
         if event_type != "finish":
             return False
@@ -258,10 +313,15 @@ class ArbiterInboxAdapter:
         text = "".join(value for value in parts if isinstance(value, str)).strip() if isinstance(parts, list) else ""
         if not text:
             return True
+        if self.runtime is not None:
+            # Deltas were already handed to the one warm worker as they
+            # arrived; finish is a stream boundary, not an end-hook trigger.
+            return True
         identity = stream.get("identity")
         identity = identity if isinstance(identity, dict) else event
         session_id = _text(identity.get("session_id"))
         turn_id = _text(identity.get("turn_id"))
+        assert self.profiles is not None and self.inbox is not None
         profile = self.profiles.resolve(session_id)
         message = {
             "schema": MESSAGE_SCHEMA,
@@ -289,6 +349,19 @@ class ArbiterInboxAdapter:
     def close(self) -> None:
         self.streams.clear()
         self.started = False
+        if self.runtime is not None:
+            self.runtime.close()
+
+    def publish_activity(self, state: str, session_id: str | None) -> bool:
+        if self.runtime is None:
+            return False
+        return self.runtime.publish_activity(
+            state,
+            session_id=session_id,
+            event_id=stable_event_id(
+                "codex-tui-activity", self.project_root, session_id, state, datetime.now().timestamp()
+            ),
+        )
 
 
 @dataclass(frozen=True)

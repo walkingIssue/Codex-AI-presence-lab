@@ -175,6 +175,39 @@ def test_queued_tts_is_immutable_but_playback_uses_stable_current_binding(
     } == {played["utterance_id"]}
 
 
+def test_hidden_progress_drops_commentary_without_dropping_final_speech(
+    tmp_path,
+    higan_pack,
+) -> None:
+    controller, _profile, _voice, _renderer = runtime(tmp_path, higan_pack)
+    source = register(controller, tmp_path / "project")
+    controller.ensure_effective(source["binding_id"])
+    controller.set_session_override(
+        source["binding_id"],
+        {"progress_visible": False},
+    )
+
+    commentary = controller.enqueue_speech(
+        source_id=source["source_id"],
+        binding_id=source["binding_id"],
+        event_id="commentary:hidden",
+        utterance_id=str(uuid.uuid4()),
+        text="This update is disabled.",
+        kind="commentary",
+    )
+    final = controller.enqueue_speech(
+        source_id=source["source_id"],
+        binding_id=source["binding_id"],
+        event_id="final:visible",
+        utterance_id=str(uuid.uuid4()),
+        text="The final remains audible.",
+        kind="final",
+    )
+
+    assert commentary is None
+    assert final is not None
+
+
 def test_activity_overlay_is_recomputed_without_changing_configuration_revision(
     tmp_path,
     higan_pack,

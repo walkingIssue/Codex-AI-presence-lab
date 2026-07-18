@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 
-from presence_runtime.errors import ValidationError
+from presence_runtime.errors import NotFoundError, ValidationError
 from presence_runtime.resolver import PresenceResolver
 from presence_runtime.store import LEASE_EXPIRY_SECONDS, PresenceStore
 
@@ -185,3 +185,21 @@ def test_geometry_is_keyed_by_binding_not_profile(
 
     assert store.geometry(first["binding_id"])["x"] == 10
     assert store.geometry(second["binding_id"]) is None
+
+
+def test_voice_input_transcript_is_durable_until_exact_binding_acknowledges(
+    tmp_path,
+) -> None:
+    store = PresenceStore(tmp_path / "state.sqlite3")
+    project = store.register_project(tmp_path / "project")
+    first = store.ensure_binding(project["project_instance_id"], new_session())
+    second = store.ensure_binding(project["project_instance_id"], new_session())
+    input_id = store.begin_input(first["binding_id"], "capture-1")
+    store.finish_input(input_id, transcript="hello runtime")
+
+    assert store.pending_inputs(second["binding_id"]) == []
+    assert store.pending_inputs(first["binding_id"])[0]["transcript"] == "hello runtime"
+    with pytest.raises(NotFoundError, match="not found"):
+        store.acknowledge_input(second["binding_id"], input_id)
+    store.acknowledge_input(first["binding_id"], input_id)
+    assert store.pending_inputs(first["binding_id"]) == []

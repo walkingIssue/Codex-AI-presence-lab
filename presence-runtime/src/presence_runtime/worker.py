@@ -23,11 +23,19 @@ class KokoroWorkerSupervisor:
         python: Path,
         worker_script: Path,
         renderer_udp_port: int = 17839,
+        provider: str = "cpu",
+        model_path: Path | None = None,
+        voices_path: Path | None = None,
+        dml_model_path: Path | None = None,
     ) -> None:
         self.runtime_root = runtime_root.expanduser().resolve()
         self.python = python.expanduser().resolve()
         self.worker_script = worker_script.expanduser().resolve()
         self.renderer_udp_port = renderer_udp_port
+        self.provider = provider
+        self.model_path = model_path
+        self.voices_path = voices_path
+        self.dml_model_path = dml_model_path
         self.process: subprocess.Popen[str] | None = None
         self.ready = False
         self._lock = threading.RLock()
@@ -43,6 +51,13 @@ class KokoroWorkerSupervisor:
             environment["CODEX_PRESENCE_HOME"] = str(self.runtime_root)
             environment["CODEX_TTS_FROM_ARBITER"] = "1"
             environment["PYTHONUNBUFFERED"] = "1"
+            environment["CODEX_TTS_PROVIDER"] = self.provider
+            if self.model_path is not None:
+                environment["CODEX_PRESENCE_MODEL_PATH"] = str(self.model_path)
+            if self.voices_path is not None:
+                environment["CODEX_PRESENCE_VOICES_PATH"] = str(self.voices_path)
+            if self.dml_model_path is not None:
+                environment["CODEX_PRESENCE_DML_MODEL_PATH"] = str(self.dml_model_path)
             try:
                 self.process = subprocess.Popen(
                     [str(self.python), str(self.worker_script), "--server"],
@@ -113,6 +128,16 @@ class KokoroWorkerSupervisor:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("stop\n", encoding="utf-8")
 
+    def resume_playback(self) -> None:
+        marker = self.runtime_root / "tts-resume.request"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("resume\n", encoding="utf-8")
+
+    def cancel_playback(self) -> None:
+        marker = self.runtime_root / "tts-cancel.request"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("cancel\n", encoding="utf-8")
+
     def status(self) -> dict[str, Any]:
         process = self.process
         running = process is not None and process.poll() is None
@@ -121,6 +146,7 @@ class KokoroWorkerSupervisor:
             "ready": bool(running and self.ready),
             "pid": process.pid if running else None,
             "runtime_root": str(self.runtime_root),
+            "provider": self.provider,
         }
 
     def stop(self) -> None:
@@ -151,6 +177,9 @@ class RecordingWorker:
         self.snapshots: list[EffectiveSnapshot] = []
         self.items: list[dict[str, Any]] = []
         self.ready = True
+        self.pause_requests = 0
+        self.resume_requests = 0
+        self.cancel_requests = 0
 
     def apply_snapshot(self, snapshot: EffectiveSnapshot) -> bool:
         self.snapshots.append(snapshot)
@@ -168,6 +197,15 @@ class RecordingWorker:
 
     def status(self) -> dict[str, Any]:
         return {"running": self.ready, "ready": self.ready, "pid": None}
+
+    def stop_playback(self) -> None:
+        self.pause_requests += 1
+
+    def resume_playback(self) -> None:
+        self.resume_requests += 1
+
+    def cancel_playback(self) -> None:
+        self.cancel_requests += 1
 
     def stop(self) -> None:
         self.ready = False

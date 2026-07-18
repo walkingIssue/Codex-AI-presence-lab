@@ -18,6 +18,12 @@
         "kind": {"enum": ["builtin", "live2d"]},
         "entrypoint": {"type": "string", "minLength": 1},
         "minimum_runtime": {"type": "string"}
+        ,"scale": {"type": "number"}
+        ,"bottom_inset": {"type": "number"}
+        ,"halo": {"type": "object"}
+        ,"fixed_parameters": {"type": "array", "items": {"type": "object"}}
+        ,"fixed_parts": {"type": "array", "items": {"type": "object"}}
+        ,"speech_motion": {"type": "object"}
       }
     },
     "semantic_slots": {

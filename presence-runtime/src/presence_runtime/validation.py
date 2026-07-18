@@ -267,11 +267,35 @@ def validate_model_pack(value: Any) -> dict[str, Any]:
     if not FINGERPRINT.fullmatch(fingerprint):
         raise ValidationError("must be a sha256 fingerprint", path="avatar.model_fingerprint")
     renderer = _object(document["renderer"], "avatar.renderer")
-    if set(renderer) - {"kind", "entrypoint", "minimum_runtime"}:
+    renderer_fields = {
+        "kind",
+        "entrypoint",
+        "minimum_runtime",
+        "scale",
+        "bottom_inset",
+        "halo",
+        "fixed_parameters",
+        "fixed_parts",
+        "speech_motion",
+    }
+    if set(renderer) - renderer_fields:
         raise ValidationError("contains unknown fields", path="avatar.renderer")
     if renderer.get("kind") not in {"builtin", "live2d"}:
         raise ValidationError("kind must be builtin or live2d", path="avatar.renderer.kind")
     _string(renderer.get("entrypoint"), "avatar.renderer.entrypoint")
+    for field in ("scale", "bottom_inset"):
+        if field in renderer and (
+            isinstance(renderer[field], bool)
+            or not isinstance(renderer[field], (int, float))
+        ):
+            raise ValidationError("must be numeric", path=f"avatar.renderer.{field}")
+    if "halo" in renderer and not isinstance(renderer["halo"], Mapping):
+        raise ValidationError("must be an object", path="avatar.renderer.halo")
+    for field in ("fixed_parameters", "fixed_parts"):
+        if field in renderer and not isinstance(renderer[field], list):
+            raise ValidationError("must be a list", path=f"avatar.renderer.{field}")
+    if "speech_motion" in renderer and not isinstance(renderer["speech_motion"], Mapping):
+        raise ValidationError("must be an object", path="avatar.renderer.speech_motion")
     slots = _object(document["semantic_slots"], "avatar.semantic_slots")
     normalized_slots: dict[str, dict[str, Any]] = {}
     for slot, definition in slots.items():

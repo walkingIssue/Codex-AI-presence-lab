@@ -429,8 +429,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from presence_compat import delegate
+
+    selected_argv = list(argv) if argv is not None else sys.argv[1:]
+    delegated = delegate("avatar-state", selected_argv)
+    if delegated is not None:
+        return delegated
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(selected_argv)
     try:
         result = args.handler(args)
     except AvatarStateError as exc:

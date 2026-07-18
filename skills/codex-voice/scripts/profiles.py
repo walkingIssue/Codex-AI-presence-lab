@@ -416,6 +416,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    from presence_compat import delegate
+
+    delegated = delegate("profiles", sys.argv[1:])
+    if delegated is not None:
+        return delegated
     parser = build_parser()
     args = parser.parse_args()
     args.project_root = args.project_root.expanduser().resolve()

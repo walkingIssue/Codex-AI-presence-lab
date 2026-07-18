@@ -226,9 +226,14 @@ def run_override(config_path: Path, arguments: list[str]) -> int:
     if not is_app_server_invocation(arguments):
         return subprocess.call(prepare_command(command), cwd=str(project_root), env=os.environ.copy())
 
-    from tui_bridge import MockKokoroWorker, TuiServerBridge
+    from tui_bridge import ArbiterInboxAdapter, TuiServerBridge
 
-    bridge = TuiServerBridge(project_root, voice_root, command, MockKokoroWorker())
+    bridge = TuiServerBridge(
+        project_root,
+        voice_root,
+        command,
+        ArbiterInboxAdapter(project_root, voice_root),
+    )
     return bridge.run()
 
 

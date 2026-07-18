@@ -196,6 +196,11 @@ def command_remove(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    from presence_compat import delegate
+
+    delegated = delegate("avatar", __import__("sys").argv[1:])
+    if delegated is not None:
+        return delegated
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
     commands = parser.add_subparsers(dest="command", required=True)

@@ -47,6 +47,9 @@ def _capability_document(model_pack: Mapping[str, Any]) -> dict[str, Any]:
             "scale": model_pack["renderer"].get("scale", 1.0),
             "bottom_inset": model_pack["renderer"].get("bottom_inset", 6.0),
             "halo": model_pack["renderer"].get("halo", {"enabled": False}),
+            "fixed_parameters": model_pack["renderer"].get("fixed_parameters", []),
+            "fixed_parts": model_pack["renderer"].get("fixed_parts", []),
+            "speech_motion": model_pack["renderer"].get("speech_motion", {}),
         },
     }
 

@@ -187,3 +187,46 @@ def test_identical_session_identity_in_two_projects_gets_distinct_bindings(
     second_client.recv()
     first_thread.join(timeout=2)
     second_thread.join(timeout=2)
+
+
+def test_playback_status_pause_resume_and_cancel_are_binding_scoped(tmp_path) -> None:
+    handler, controller = build_handler(tmp_path)
+    client, thread = start_pair(handler)
+    registered = register(client, tmp_path / "project", str(uuid.uuid4()))
+    event_id = "final:scoped-playback"
+    utterance_id = str(uuid.uuid4())
+    client.send(
+        {
+            "type": "speech/enqueue",
+            "event_id": event_id,
+            "utterance_id": utterance_id,
+            "text": "Pause and cancel only this binding.",
+            "kind": "final",
+        }
+    )
+    assert client.recv()["type"] == "speech/enqueued"
+    item = controller.store.claim_next_speech()
+    assert item is not None
+    controller.store.begin_playback(registered["binding_id"], utterance_id)
+    controller.store.update_speech_status(item["queue_id"], "playing")
+
+    client.send({"type": "playback/status", "event_ids": [event_id]})
+    status = client.recv()
+    assert status["speech"][event_id]["status"] == "playing"
+
+    client.send({"type": "playback/pause"})
+    assert client.recv()["paused"] is True
+    assert controller.voice.pause_requests == 1
+    client.send({"type": "playback/resume"})
+    assert client.recv()["resumed"] is True
+    assert controller.voice.resume_requests == 1
+
+    client.send({"type": "speech/cancel", "event_ids": [event_id]})
+    assert client.recv()["cancelled"] == 1
+    assert controller.voice.cancel_requests == 1
+    client.send({"type": "playback/status", "event_ids": [event_id]})
+    assert client.recv()["speech"][event_id]["status"] == "cancelled"
+
+    client.send({"type": "disconnect"})
+    client.recv()
+    thread.join(timeout=2)

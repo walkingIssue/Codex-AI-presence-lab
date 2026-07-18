@@ -22,15 +22,31 @@ ROOT = Path(__file__).resolve().parents[2]
 VOICE_ROOT = Path(
     os.environ.get("CODEX_PRESENCE_HOME", str(ROOT / ".codex-voice"))
 ).expanduser().resolve()
-MODEL_PATH = VOICE_ROOT / "kokoro-v1.0.int8.onnx"
-DML_MODEL_PATH = VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.int8.dml-conv2d.onnx"
-VOICES_PATH = VOICE_ROOT / "voices-v1.0.bin"
+MODEL_PATH = Path(
+    os.environ.get(
+        "CODEX_PRESENCE_MODEL_PATH",
+        str(VOICE_ROOT / "kokoro-v1.0.int8.onnx"),
+    )
+).expanduser().resolve()
+DML_MODEL_PATH = Path(
+    os.environ.get(
+        "CODEX_PRESENCE_DML_MODEL_PATH",
+        str(VOICE_ROOT / "gpu_patch" / "kokoro-v1.0.int8.dml-conv2d.onnx"),
+    )
+).expanduser().resolve()
+VOICES_PATH = Path(
+    os.environ.get(
+        "CODEX_PRESENCE_VOICES_PATH",
+        str(VOICE_ROOT / "voices-v1.0.bin"),
+    )
+).expanduser().resolve()
 ENABLED_MARKER = VOICE_ROOT / "enabled"
 LOG_PATH = VOICE_ROOT / "hook.log"
 WATCHER_PID_PATH = VOICE_ROOT / "watcher.pid"
 PLAYER_PID_PATH = VOICE_ROOT / "tts-player.pid"
 STOP_REQUEST_PATH = VOICE_ROOT / "tts-stop.request"
 RESUME_REQUEST_PATH = VOICE_ROOT / "tts-resume.request"
+CANCEL_REQUEST_PATH = VOICE_ROOT / "tts-cancel.request"
 PROGRESS_PATH = VOICE_ROOT / "tts-progress.json"
 VOICE_CONFIG_PATH = VOICE_ROOT / "voice"
 MODE_CONFIG_PATH = VOICE_ROOT / "mode"
@@ -141,6 +157,16 @@ def resume_requested() -> bool:
         return False
     try:
         RESUME_REQUEST_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
+def cancel_requested() -> bool:
+    if not CANCEL_REQUEST_PATH.is_file():
+        return False
+    try:
+        CANCEL_REQUEST_PATH.unlink(missing_ok=True)
     except OSError:
         pass
     return True
@@ -454,6 +480,11 @@ class OrbPlaybackTimeline:
         self.cursor = 0
         self.started_at: float | None = None
         self.scheduler: threading.Thread | None = None
+        self.playback_allowed = threading.Event()
+        self.playback_allowed.set()
+        self.clock_lock = threading.Lock()
+        self.paused_at: float | None = None
+        self.paused_seconds = 0.0
 
     def start(self) -> None:
         if self.orb is None or self.scheduler is not None:
@@ -502,9 +533,14 @@ class OrbPlaybackTimeline:
                     due_time, _, payload = self.events.get(timeout=0.05)
                 except queue.Empty:
                     continue
-                delay = due_time - time.monotonic()
-                if delay > 0:
-                    time.sleep(delay)
+                while True:
+                    self.playback_allowed.wait()
+                    with self.clock_lock:
+                        adjusted_due = due_time + self.paused_seconds
+                    delay = adjusted_due - time.monotonic()
+                    if delay <= 0:
+                        break
+                    time.sleep(min(delay, 0.02))
                 orb_send(self.orb, payload)
                 self.events.task_done()
         finally:
@@ -514,12 +550,26 @@ class OrbPlaybackTimeline:
         if self.orb is None:
             return
         if self.scheduler is not None:
+            self.resume()
             self.producer_done.set()
             self.scheduler.join(timeout=max(2.0, self.cursor / self.sample_rate + 1.0))
             if not self.scheduler_done.is_set():
                 hook_log("orb playback scheduler timed out")
         orb_send(self.orb, self._packet({"type": "state", "state": "idle"}))
         self.orb.close()
+
+    def pause(self) -> None:
+        with self.clock_lock:
+            if self.paused_at is None:
+                self.paused_at = time.monotonic()
+                self.playback_allowed.clear()
+
+    def resume(self) -> None:
+        with self.clock_lock:
+            if self.paused_at is not None:
+                self.paused_seconds += time.monotonic() - self.paused_at
+                self.paused_at = None
+                self.playback_allowed.set()
 
     def _packet(self, payload: dict) -> dict:
         if self.binding_id is None or self.utterance_id is None:
@@ -776,17 +826,28 @@ def stream_audio(
         async def monitor_controls() -> None:
             nonlocal control_generation
             while not shutdown.is_set():
+                if cancel_requested():
+                    control_generation += 1
+                    close_player()
+                    abort_requested.set()
+                    playback_allowed.set()
+                    await asyncio.sleep(0.01)
+                    continue
                 if stop_requested():
                     control_generation += 1
                     close_player()
                     if pauseable:
                         playback_allowed.clear()
+                        if timeline is not None:
+                            timeline.pause()
                         hook_log("stream playback paused; inference continues")
                     elif interruptible:
                         abort_requested.set()
                         playback_allowed.set()
                 if resume_requested() and pauseable:
                     playback_allowed.set()
+                    if timeline is not None:
+                        timeline.resume()
                     hook_log("stream playback resumed from buffered PCM")
                 await asyncio.sleep(0.01)
 
@@ -886,6 +947,7 @@ def stream_audio(
                 clear_tts_progress(event_id)
             STOP_REQUEST_PATH.unlink(missing_ok=True)
             RESUME_REQUEST_PATH.unlink(missing_ok=True)
+            CANCEL_REQUEST_PATH.unlink(missing_ok=True)
 
     asyncio.run(consume())
     hook_log("stream completed")
@@ -897,6 +959,7 @@ def play_audio(
     event_id: str | None = None,
     text: str | None = None,
     interruptible: bool = True,
+    pauseable: bool = False,
     orb_port: int | None = None,
     binding_id: str | None = None,
     utterance_id: str | None = None,
@@ -904,94 +967,116 @@ def play_audio(
     ffplay = ffplay_executable()
     if ffplay:
         volume = configured_volume()
+        timeline: OrbPlaybackTimeline | None = None
+        duration: float | None = None
         if orb_port is not None or orb_is_enabled():
-            player: subprocess.Popen[bytes] | None = None
-            timeline: OrbPlaybackTimeline | None = None
-            completed = False
             try:
                 import soundfile as sf
 
                 audio, sample_rate = sf.read(
                     str(audio_path), dtype="float32", always_2d=False
                 )
+                duration = max(0.1, len(audio) / max(1, int(sample_rate)))
                 timeline = create_orb_timeline(
                     orb_socket(orb_port),
                     int(sample_rate),
                     binding_id=binding_id,
                     utterance_id=utterance_id,
                 )
+                timeline.add(audio)
+            except Exception as exc:
+                hook_log(f"buffered orb analysis failed: {type(exc).__name__}: {exc}")
+                timeline = None
+
+        player: subprocess.Popen[bytes] | None = None
+        completed = False
+        position = 0.0
+        progress_text = text or audio_path.name
+        try:
+            write_tts_progress(event_id, progress_text, 0.0)
+            while True:
+                command = [
+                    ffplay,
+                    "-nodisp",
+                    "-autoexit",
+                    "-loglevel",
+                    "error",
+                    "-volume",
+                    str(volume),
+                ]
+                if position > 0:
+                    command.extend(["-ss", f"{position:.3f}"])
+                command.append(str(audio_path))
                 player = subprocess.Popen(
-                    [
-                        ffplay,
-                        "-nodisp",
-                        "-autoexit",
-                        "-loglevel",
-                        "error",
-                        "-volume",
-                        str(volume),
-                        str(audio_path),
-                    ],
+                    command,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 write_player_pid(player)
-                timeline.add(audio)
-                duration = max(0.1, len(audio) / max(1, int(sample_rate)))
-                started_at = time.monotonic()
-                progress_text = text or audio_path.name
-                write_tts_progress(event_id, progress_text, 0.0)
+                segment_started = time.monotonic()
+                paused = False
                 while player.poll() is None:
-                    if interruptible and stop_requested():
+                    elapsed = max(0.0, time.monotonic() - segment_started)
+                    if cancel_requested():
                         player.terminate()
                         raise PlaybackInterrupted()
-                    write_tts_progress(event_id, progress_text, (time.monotonic() - started_at) / duration)
+                    if stop_requested():
+                        if pauseable:
+                            position += elapsed
+                            if duration is not None:
+                                position = min(position, duration)
+                            player.terminate()
+                            try:
+                                player.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                player.kill()
+                            clear_player_pid(player)
+                            if timeline is not None:
+                                timeline.pause()
+                            hook_log("buffered playback paused")
+                            while True:
+                                if cancel_requested():
+                                    raise PlaybackInterrupted()
+                                if resume_requested():
+                                    if timeline is not None:
+                                        timeline.resume()
+                                    hook_log("buffered playback resumed")
+                                    break
+                                time.sleep(0.01)
+                            paused = True
+                            break
+                        if interruptible:
+                            player.terminate()
+                            raise PlaybackInterrupted()
+                    if duration is not None:
+                        write_tts_progress(
+                            event_id,
+                            progress_text,
+                            (position + elapsed) / duration,
+                        )
                     time.sleep(0.05)
+                clear_player_pid(player)
+                player = None
+                if paused:
+                    if duration is not None and position >= duration:
+                        completed = True
+                        return
+                    continue
                 completed = True
                 return
-            except PlaybackInterrupted:
-                raise
-            except Exception as exc:
-                hook_log(f"buffered orb playback failed: {type(exc).__name__}: {exc}")
-                if player is not None:
-                    if player.poll() is None:
-                        player.wait()
-                    clear_player_pid(player)
-                    return
-            finally:
-                if timeline is not None:
-                    timeline.finish()
-                if completed:
-                    clear_tts_progress(event_id)
-
-        player = subprocess.Popen(
-            [
-                ffplay,
-                "-nodisp",
-                "-autoexit",
-                "-loglevel",
-                "error",
-                "-volume",
-                str(volume),
-                str(audio_path),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        write_player_pid(player)
-        completed = False
-        try:
-            while player.poll() is None:
-                if interruptible and stop_requested():
-                    player.terminate()
-                    raise PlaybackInterrupted()
-                time.sleep(0.05)
-            completed = True
         finally:
-            clear_player_pid(player)
+            if player is not None:
+                if player.poll() is None:
+                    player.terminate()
+                clear_player_pid(player)
+            if timeline is not None:
+                timeline.finish()
             if completed:
                 clear_tts_progress(event_id)
-        return
+            STOP_REQUEST_PATH.unlink(missing_ok=True)
+            RESUME_REQUEST_PATH.unlink(missing_ok=True)
+            CANCEL_REQUEST_PATH.unlink(missing_ok=True)
 
     if os.environ.get("CODEX_TTS_ALLOW_FULL_VOLUME") != "1":
         raise RuntimeError(
@@ -1105,6 +1190,7 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
                 event_id=event_id,
                 text=text,
                 interruptible=interruptible,
+                pauseable=pauseable,
                 orb_port=orb_port,
                 binding_id=binding_id,
                 utterance_id=utterance_id,

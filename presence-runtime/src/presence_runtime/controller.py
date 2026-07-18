@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import uuid
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from .catalog import Catalog
 from .errors import ConflictError, PresenceError, ValidationError
@@ -45,6 +45,8 @@ class RecordingRenderer:
         self.snapshots: dict[str, EffectiveSnapshot] = {}
         self.activities: list[EffectiveSnapshot] = []
         self.playback: list[dict[str, Any]] = []
+        self.binding_activity: dict[str, bool] = {}
+        self.removed: list[str] = []
         self.ready = True
 
     def apply_snapshot(self, snapshot: EffectiveSnapshot) -> bool:
@@ -69,6 +71,16 @@ class RecordingRenderer:
         )
         return {"running": self.ready, "ready": self.ready, "acknowledged": acknowledged}
 
+    def set_binding_active(self, binding_id: str, active: bool) -> bool:
+        self.binding_activity[binding_id] = active
+        return binding_id in self.snapshots
+
+    def remove_binding(self, binding_id: str) -> bool:
+        self.snapshots.pop(binding_id, None)
+        self.binding_activity.pop(binding_id, None)
+        self.removed.append(binding_id)
+        return True
+
 
 class RuntimeController:
     """One mutation path for persistent configuration and runtime consumers."""
@@ -81,12 +93,14 @@ class RuntimeController:
         voice: VoiceConsumer,
         renderer: RendererConsumer,
         resolver: PresenceResolver | None = None,
+        input_status: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self.store = store
         self.catalog = catalog
         self.voice = voice
         self.renderer = renderer
         self.resolver = resolver or PresenceResolver()
+        self.input_status = input_status
 
     def ensure_effective(self, binding_id: str) -> EffectiveSnapshot:
         current = self.store.effective_snapshot(binding_id)
@@ -393,9 +407,20 @@ class RuntimeController:
         return saved, self.reconcile_catalog()
 
     def reconcile_catalog(self) -> list[EffectiveSnapshot]:
+        return self._reconcile_bindings(self.store.list_bindings())
+
+    def reconcile_project(self, project_id: str) -> list[EffectiveSnapshot]:
+        self.store.project(project_id)
+        return self._reconcile_bindings(
+            self.store.list_bindings(project_id=project_id)
+        )
+
+    def _reconcile_bindings(
+        self, bindings: list[Mapping[str, Any]]
+    ) -> list[EffectiveSnapshot]:
         candidates: list[EffectiveSnapshot] = []
         previous: dict[str, EffectiveSnapshot | None] = {}
-        for binding in self.store.list_bindings():
+        for binding in bindings:
             binding_id = binding["binding_id"]
             current = self.store.effective_snapshot(binding_id)
             candidate = self.resolve_binding(binding_id)
@@ -459,6 +484,8 @@ class RuntimeController:
             references=references,
             force=force,
         )
+        if force:
+            self.sync_binding_visibility()
 
     def rehydrate(self) -> dict[str, list[str]]:
         restored: list[str] = []
@@ -475,10 +502,25 @@ class RuntimeController:
 
     def sync_binding_visibility(self) -> None:
         setter = getattr(self.renderer, "set_binding_active", None)
-        if not callable(setter):
+        remover = getattr(self.renderer, "remove_binding", None)
+        if not callable(setter) and not callable(remover):
             return
-        for binding in self.store.list_bindings():
-            setter(binding["binding_id"], binding["state"] == "active")
+        attention = self.store.attention()
+        for binding in self.store.list_bindings(include_deleted=True):
+            binding_id = binding["binding_id"]
+            if binding["state"] == "deleted":
+                if attention.get("binding_id") == binding_id:
+                    cancel = getattr(self.voice, "cancel_playback", None)
+                    if callable(cancel):
+                        cancel()
+                    else:
+                        stop = getattr(self.voice, "stop_playback", None)
+                        if callable(stop):
+                            stop()
+                if callable(remover):
+                    remover(binding_id)
+            elif callable(setter):
+                setter(binding_id, binding["state"] == "active")
 
     def _stage_and_ack(self, candidate: EffectiveSnapshot) -> None:
         self.store.stage_snapshot(candidate)
@@ -567,6 +609,8 @@ class RuntimeController:
         snapshot = self.ensure_effective(binding_id)
         volume = snapshot.tts.volume
         if kind == "commentary":
+            if not snapshot.renderer.progress_visible:
+                return None
             volume = round(volume * snapshot.tts.commentary_ratio)
         return self.store.enqueue_speech(
             source_id=source_id,
@@ -592,25 +636,46 @@ class RuntimeController:
             return None
         # The current destination is always the stable binding. Profile ids,
         # foreground windows, and old ports are never consulted.
-        started = {
-            "type": "voice-output",
-            "state": "started",
-            "binding_id": item["binding_id"],
-            "utterance_id": item["utterance_id"],
-        }
-        self.renderer.playback_event(started)
-        self.store.update_speech_status(item["queue_id"], "playing")
+        result = "failed"
+        diagnostic: str | None = None
+        attention_started = False
         try:
+            self.store.begin_playback(item["binding_id"], item["utterance_id"])
+            attention_started = True
+            self.renderer.playback_event(
+                {
+                    "type": "voice-output",
+                    "state": "started",
+                    "binding_id": item["binding_id"],
+                    "utterance_id": item["utterance_id"],
+                }
+            )
+            self.store.update_speech_status(item["queue_id"], "playing")
             result = self.voice.speak(item)
-        except PresenceError:
-            result = "failed"
+        except Exception as exc:
+            # A worker or renderer transport failure must not strand a durable
+            # item in claimed/playing forever.  The playback loop remains live
+            # and doctor exposes the terminal diagnostic.
+            diagnostic = f"{type(exc).__name__}: {exc}"
+        finally:
+            if attention_started:
+                self.store.finish_playback(item["binding_id"], item["utterance_id"])
         if result == "completed":
             status = "finished"
         elif result == "interrupted":
             status = "paused"
         else:
             status = "failed"
-        self.store.update_speech_status(item["queue_id"], status)
+        changed = self.store.transition_speech_status(
+            item["queue_id"],
+            status,
+            from_statuses=("claimed", "playing", "paused"),
+            reason=diagnostic,
+        )
+        if not changed:
+            # A concurrent binding removal or explicit cancellation is
+            # authoritative and may not be overwritten by a late worker exit.
+            status = self.store.speech_item(item["queue_id"])["status"]
         self.renderer.playback_event(
             {
                 "type": "voice-output",
@@ -621,10 +686,59 @@ class RuntimeController:
         )
         return {**item, "status": status}
 
+    def pause_playback(self, binding_id: str) -> dict[str, Any]:
+        attention = self.store.set_playback_attention(binding_id, "paused")
+        if not attention["changed"]:
+            return {"paused": False, "attention": attention}
+        stop = getattr(self.voice, "stop_playback", None)
+        if stop is None:
+            self.store.set_playback_attention(binding_id, "speaking")
+            raise ConflictError("voice worker does not support buffered pause")
+        stop()
+        result = {
+            "paused": True,
+            "binding_id": binding_id,
+            "utterance_id": attention.get("utterance_id"),
+            "attention": self.store.attention(),
+        }
+        self.renderer.playback_event(
+            {
+                "type": "voice-output",
+                "state": "paused",
+                "binding_id": binding_id,
+                "utterance_id": attention.get("utterance_id"),
+            }
+        )
+        return result
+
+    def resume_playback(self, binding_id: str) -> dict[str, Any]:
+        attention = self.store.set_playback_attention(binding_id, "speaking")
+        if not attention["changed"]:
+            return {"resumed": False, "attention": attention}
+        resume = getattr(self.voice, "resume_playback", None)
+        if resume is None:
+            self.store.set_playback_attention(binding_id, "paused")
+            raise ConflictError("voice worker does not support buffered resume")
+        resume()
+        self.renderer.playback_event(
+            {
+                "type": "voice-output",
+                "state": "started",
+                "binding_id": binding_id,
+                "utterance_id": attention.get("utterance_id"),
+            }
+        )
+        return {
+            "resumed": True,
+            "binding_id": binding_id,
+            "utterance_id": attention.get("utterance_id"),
+            "attention": self.store.attention(),
+        }
+
     def doctor(self, binding_id: str | None = None) -> dict[str, Any]:
         binding = self.store.binding(binding_id) if binding_id else None
         snapshot = self.store.effective_snapshot(binding_id) if binding_id else None
-        return {
+        result = {
             "runtime": {
                 "database": str(self.store.path),
                 "journal_mode": self.store.journal_mode,
@@ -637,3 +751,19 @@ class RuntimeController:
             "worker": dict(self.voice.status()),
             "renderer": dict(self.renderer.status(binding_id)),
         }
+        if self.input_status is not None:
+            result["voice_input"] = dict(self.input_status())
+        return result
+
+    def cancel_speech(self, binding_id: str, event_ids: list[str]) -> int:
+        statuses = self.store.speech_statuses(binding_id, event_ids)
+        cancelled = self.store.cancel_speech_events(binding_id, event_ids)
+        if any(item["status"] == "playing" for item in statuses.values()):
+            cancel = getattr(self.voice, "cancel_playback", None)
+            if callable(cancel):
+                cancel()
+            else:
+                stop = getattr(self.voice, "stop_playback", None)
+                if callable(stop):
+                    stop()
+        return cancelled

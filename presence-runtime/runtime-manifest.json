@@ -24,7 +24,7 @@
       "owner": "presence-runtime",
       "artifacts": ["$CODEX_HOME/presence/.venv/"],
       "dependencies": [],
-      "dependents": ["supervisor", "kokoro-worker", "stt-runtime"],
+      "dependents": ["supervisor", "adapter-registration", "kokoro-worker", "stt-runtime"],
       "preserved_data": [],
       "removal": "Remove only the managed virtual environment after dependents stop."
     },
@@ -62,11 +62,11 @@
       "id": "adapter-registration",
       "scope": "project",
       "owner": "presence-runtime",
-      "artifacts": ["project adapter diagnostics and rollout cursors", "$CODEX_HOME/presence/presence.pipe or presence.sock"],
-      "dependencies": ["supervisor", "state-store"],
+      "artifacts": ["$CODEX_HOME/presence/adapters/", "project .codex-voice/v0.2 diagnostics and rollout cursors", "$CODEX_HOME/presence/presence.pipe or presence.sock"],
+      "dependencies": ["supervisor", "python-runtime", "state-store"],
       "dependents": ["bindings", "speech-queue", "renderer-host"],
       "preserved_data": ["dormant binding configuration"],
-      "removal": "Project unregister removes only that project's registration and managed adapter files; shared runtime and catalog remain."
+      "removal": "Project unregister stops its thin rollout source and removes only the manifest-owned .codex-voice/v0.2 files; shared runtime, legacy rollback inputs, and catalog remain."
     },
     {
       "id": "bindings",
@@ -123,7 +123,7 @@
       "scope": "user",
       "owner": "presence-runtime",
       "artifacts": ["$CODEX_HOME/presence/stt/", "$CODEX_HOME/presence/stt-models/"],
-      "dependencies": ["supervisor", "python-runtime", "machine microphone permission"],
+      "dependencies": ["supervisor", "python-runtime"],
       "dependents": [],
       "preserved_data": ["explicit machine input permission"],
       "removal": "Stop capture, revoke managed gesture registration, and remove managed STT code/models; never alter OS microphone policy."

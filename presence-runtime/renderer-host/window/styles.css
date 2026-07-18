@@ -18,7 +18,6 @@ body {
 }
 
 body {
-  -webkit-app-region: drag;
   display: grid;
   place-items: center;
 }
@@ -60,4 +59,3 @@ body {
   transform: scale(calc(0.96 + var(--presence-energy) * 0.12));
   transition: background 180ms ease;
 }
-

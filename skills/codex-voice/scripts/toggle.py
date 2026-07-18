@@ -308,6 +308,11 @@ def require_thread_id() -> str | None:
 
 
 def main() -> int:
+    from presence_compat import delegate
+
+    delegated = delegate("toggle", sys.argv[1:])
+    if delegated is not None:
+        return delegated
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "operation",
