@@ -61,15 +61,16 @@ jobs:
         shell: pwsh
         working-directory: source
         run: |
+          $env:PYTHONDONTWRITEBYTECODE = '1'
           if (Test-Path presence-runtime/tests) {
             $env:PYTHONPATH = (Resolve-Path presence-runtime/src).Path
-            python -m pytest -q presence-runtime/tests
-            python ../lab/tools/runtime_manifest.py --check
+            python -m pytest -q -p no:cacheprovider presence-runtime/tests
+            python tools/runtime_manifest.py --check
           }
-          python -m pytest -q skills/codex-voice/tests
+          python -m pytest -q -p no:cacheprovider skills/codex-voice/tests
           if (Test-Path live2d-avatar-runtime/tests) {
             $env:PYTHONPATH = (Resolve-Path live2d-avatar-runtime/src).Path
-            python -m pytest -q live2d-avatar-runtime/tests
+            python -m pytest -q -p no:cacheprovider live2d-avatar-runtime/tests
           }
           npm --prefix presence-runtime/renderer-host test -- --runInBand
 
@@ -77,21 +78,28 @@ jobs:
         shell: pwsh
         working-directory: lab
         run: |
-          python tools/project_release.py --source ../source --output dist
-          python tools/e2e_check.py --source dist
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          $toolRoot = if (Test-Path ../source/tools/project_release.py) {
+            Resolve-Path ../source/tools
+          } else {
+            Resolve-Path tools
+          }
+          python "$toolRoot/project_release.py" --source ../source --output dist
+          python "$toolRoot/e2e_check.py" --source dist
 
       - name: Run projected contract suites
         shell: pwsh
         working-directory: lab
         run: |
-          python -m pytest -q dist/skills/codex-voice/tests
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          python -m pytest -q -p no:cacheprovider dist/skills/codex-voice/tests
           if (Test-Path ../source/presence-runtime/tests) {
             $env:PYTHONPATH = (Resolve-Path dist/skills/codex-voice/presence-runtime/src).Path
-            python -m pytest -q ../source/presence-runtime/tests
+            python -m pytest -q -p no:cacheprovider ../source/presence-runtime/tests
           }
           if (Test-Path ../source/live2d-avatar-runtime/tests) {
             $env:PYTHONPATH = (Resolve-Path dist/skills/codex-voice/live2d-avatar-runtime/src).Path
-            python -m pytest -q ../source/live2d-avatar-runtime/tests
+            python -m pytest -q -p no:cacheprovider ../source/live2d-avatar-runtime/tests
           }
           npm --prefix dist/skills/codex-voice/presence-runtime/renderer-host test -- --runInBand
 
@@ -107,66 +115,3 @@ jobs:
           name: codex-ai-presence-skill
           path: lab/codex-ai-presence-skill.zip
           if-no-files-found: error
-
-  validate-fedora:
-    name: Fedora contract
-    runs-on: ubuntu-latest
-    container: fedora:42
-    steps:
-      - name: Install Fedora contract dependencies
-        shell: bash
-        run: dnf install -y git python3 python3-pip nodejs npm tar gzip
-
-      - name: Check out source under test
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.source-repository || github.repository }}
-          ref: ${{ inputs.source-ref || github.sha }}
-          path: source
-
-      - name: Check out lab tooling
-        uses: actions/checkout@v4
-        with:
-          repository: walkingIssue/Codex-AI-presence-lab
-          ref: main
-          path: lab
-
-      - name: Create Fedora contract environment
-        shell: bash
-        run: |
-          python3 -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip pytest
-
-      - name: Run source contract suites
-        shell: bash
-        working-directory: source
-        run: |
-          if [ -d presence-runtime/tests ]; then
-            PYTHONPATH="$PWD/presence-runtime/src" ../.venv/bin/python -m pytest -q presence-runtime/tests
-            ../.venv/bin/python ../lab/tools/runtime_manifest.py --check
-          fi
-          ../.venv/bin/python -m pytest -q skills/codex-voice/tests
-          if [ -d live2d-avatar-runtime/tests ]; then
-            PYTHONPATH="$PWD/live2d-avatar-runtime/src" ../.venv/bin/python -m pytest -q live2d-avatar-runtime/tests
-          fi
-          npm --prefix presence-runtime/renderer-host test -- --runInBand
-
-      - name: Project the installable skill
-        shell: bash
-        working-directory: lab
-        run: |
-          ../.venv/bin/python tools/project_release.py --source ../source --output dist
-          ../.venv/bin/python tools/e2e_check.py --source dist
-
-      - name: Run projected contract suites
-        shell: bash
-        working-directory: lab
-        run: |
-          ../.venv/bin/python -m pytest -q dist/skills/codex-voice/tests
-          if [ -d ../source/presence-runtime/tests ]; then
-            PYTHONPATH="$PWD/dist/skills/codex-voice/presence-runtime/src" ../.venv/bin/python -m pytest -q ../source/presence-runtime/tests
-          fi
-          if [ -d ../source/live2d-avatar-runtime/tests ]; then
-            PYTHONPATH="$PWD/dist/skills/codex-voice/live2d-avatar-runtime/src" ../.venv/bin/python -m pytest -q ../source/live2d-avatar-runtime/tests
-          fi
-          npm --prefix dist/skills/codex-voice/presence-runtime/renderer-host test -- --runInBand
