@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walkingissue.local/presence/presence-profile-v0.2.schema.json",
+  "title": "Presence Runtime v0.2 Presence Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "profile_id", "revision"],
+  "properties": {
+    "schema": {"const": "presence/profile/v0.2"},
+    "profile_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "revision": {"type": "integer", "minimum": 1},
+    "voice_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "speed": {"type": "number", "minimum": 0.25, "maximum": 4},
+    "playback_mode": {"enum": ["stream", "quality"]},
+    "volume": {"type": "integer", "minimum": 0, "maximum": 100},
+    "commentary_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "avatar_ref": {"type": "string", "minLength": 1},
+    "preset_ref": {"type": "string", "minLength": 1, "x-clearable": true},
+    "progress_visible": {"type": "boolean"},
+    "renderer_visible": {"type": "boolean"},
+    "semantic": {"$ref": "#/$defs/semanticSelection"}
+  },
+  "$defs": {
+    "activityRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "add": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "semanticSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "slots": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9._-]{0,127}$"},
+          "additionalProperties": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string"}
+          }
+        },
+        "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "activity": {"type": "object", "additionalProperties": {"$ref": "#/$defs/activityRule"}}
+      }
+    }
+  }
+}

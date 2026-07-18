@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex AI Presence"
-  short_description: "Control Kokoro voice, Orb, and custom avatars"
-  default_prompt: "Use $codex-voice to set up, uninstall, enable, disable, configure, or explain local Codex voice, playback, provider, scope, progress, volume, Orb, Orb-position, activity-state, avatar-state bridge, and experimental custom-avatar renderer settings."
+  short_description: "Control user-level voice and dynamic avatars"
+  default_prompt: "Use $codex-voice to install, register, inspect, configure, migrate, troubleshoot, or uninstall the user-level Presence Runtime, including Kokoro voice, voiced updates, speech input, project/session inheritance, reusable profiles, presets, and dynamic Live2D avatar swaps."

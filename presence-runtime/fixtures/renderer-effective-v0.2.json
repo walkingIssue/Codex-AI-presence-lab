@@ -1,0 +1,31 @@
+{
+  "schema": "presence/renderer-snapshot/v0.2",
+  "binding_id": "ebf6ea73-9ef8-4b06-bb3e-dab542e10440",
+  "revision": 7,
+  "avatar_ref": "higan@3",
+  "model_fingerprint": "sha256:b858accec6f9bf5d98728ef25e7fcf6db9c86e5358a4fa4e214d846df526b715",
+  "preset_ref": "plain-sweater@2",
+  "semantic": {
+    "persistent_actions": [
+      "wardrobe.sweater",
+      "pose.sweater-default"
+    ],
+    "effective_actions": [
+      "wardrobe.sweater",
+      "gesture.hand-mouth"
+    ],
+    "activity": "thinking"
+  },
+  "renderer": {
+    "visible": true,
+    "progress_visible": true,
+    "kind": "live2d"
+  },
+  "capabilities": [
+    "activity-state",
+    "audio-cadence",
+    "geometry",
+    "semantic-slots"
+  ]
+}
+

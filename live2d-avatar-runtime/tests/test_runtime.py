@@ -852,6 +852,7 @@ print(json.dumps(payload))
             const positionCalls = [];
             const scaleCalls = [];
             const resizeCalls = [];
+            const domListeners = {};
             let applicationOptions = null;
             let live2dOptions = null;
             let appStarted = false;
@@ -873,6 +874,8 @@ print(json.dumps(payload))
             function parameterId(index) { return parameterIds[index]; }
             const core = {
               getParameterIndex(id) { return parameterIndex(id); },
+              getParameterDefaultValue(_index) { return 0; },
+              getParameterValueByIndex(index) { return values.get(parameterId(index)) || 0; },
               addParameterValueByIndex(index, value) { const id = parameterId(index); calls.push(id); values.set(id, (values.get(id) || 0) + value); },
               setParameterValueByIndex(index, value) { const id = parameterId(index); setCalls.push([id, value]); values.set(id, value); },
               multiplyParameterValueByIndex(index, value) { const id = parameterId(index); values.set(id, (values.get(id) || 0) * value); },
@@ -905,6 +908,8 @@ print(json.dumps(payload))
               actions: [
                 { id: "toggle.base", parameter_operations: [{ parameter_id: "control.base", value: 1, blend: "Add" }] },
                 { id: "toggle.overlay", parameter_operations: [{ parameter_id: "control.overlay", value: 1, blend: "Add" }] },
+                { id: "semantic.mouth", parameter_operations: [{ parameter_id: "rig.mouth.primary", value: 0.72, blend: "Overwrite" }] },
+                { id: "semantic.jaw", parameter_operations: [{ parameter_id: "rig.jaw", value: 0.58, blend: "Overwrite" }] },
               ],
               safe_default_operations: [],
               initial_actions: [],
@@ -941,7 +946,15 @@ print(json.dumps(payload))
               drag: noOp,
               dragStart: noOp,
             };
-            window.addEventListener = noOp;
+            window.presenceRenderer = {
+              onSnapshot(callback) { callbacks.snapshot = callback; },
+              onEvent(callback) { callbacks.presenceEvent = callback; },
+              onPresentation(callback) { callbacks.presentation = callback; },
+              onPresentationCancel(callback) { callbacks.presentationCancel = callback; },
+              ready: noOp,
+              failed: noOp,
+            };
+            window.addEventListener = (name, callback) => { domListeners[name] = callback; };
             global.document = {
               getElementById() {
                 return { addEventListener: noOp, hasPointerCapture: () => false, setPointerCapture: noOp, releasePointerCapture: noOp };
@@ -950,7 +963,7 @@ print(json.dumps(payload))
               body: { classList: { add: noOp, remove: noOp, toggle: noOp } },
             };
             vm.runInThisContext(fs.readFileSync(rendererPath, "utf8"), { filename: rendererPath });
-            setImmediate(() => setImmediate(() => {
+            setImmediate(() => setImmediate(async () => {
               if (app.ticker.calls !== 1 || typeof tickerCallback !== "function" || tickerPriority !== 25 || !appStarted) {
                 throw new Error("renderer did not consolidate model updates onto the application ticker");
               }
@@ -974,13 +987,19 @@ print(json.dumps(payload))
               }
               const resizedScale = scaleCalls.at(-1)?.[0];
               if (!(resizedScale > initialScale)) throw new Error("renderer did not re-fit the model after resize");
+              window.innerWidth = 660;
+              window.innerHeight = 990;
+              domListeners.resize();
+              if (resizeCalls.at(-1)?.[0] !== 660 || resizeCalls.at(-1)?.[1] !== 990) {
+                throw new Error("central presence window resize did not refit the renderer");
+              }
               callbacks.avatar({ avatar_id: "demo-avatar", revision: 1, actions: ["toggle.overlay", "toggle.base"] });
               lifecycle.beforeModelUpdate();
               if (values.get("control.base") !== 1 || values.get("control.overlay") !== 1) throw new Error("initial state was not composed");
-              if (calls.filter((id) => id.startsWith("control.")).join(",") !== "control.base,control.overlay") throw new Error("renderer did not use model-local replay order");
+              if (setCalls.filter(([id]) => id.startsWith("control.")).slice(-2).map(([id]) => id).join(",") !== "control.base,control.overlay") throw new Error("renderer did not use model-local replay order");
               const idleEye = setCalls.find(([id]) => id === "rig.eye.left");
               if (!idleEye || !(idleEye[1] >= 0.34 && idleEye[1] <= 0.5)) throw new Error("idle eyelid sway escaped its configured range");
-              values.set("control.base", 0); values.set("control.overlay", 0); calls.length = 0;
+              calls.length = 0;
               callbacks.avatar({ avatar_id: "demo-avatar", revision: 2, actions: [] });
               lifecycle.beforeModelUpdate();
               if (values.get("control.base") !== 0 || values.get("control.overlay") !== 0) throw new Error("reset retained an old action");
@@ -998,14 +1017,14 @@ print(json.dumps(payload))
               values.set("control.base", 0); values.set("control.overlay", 0); calls.length = 0;
               clockMs = 501;
               lifecycle.beforeModelUpdate();
-              if (calls.includes("control.overlay")) throw new Error("activity overlay did not clear after its ttl elapsed");
+              if (values.get("control.overlay") !== 0) throw new Error("activity overlay did not clear after its ttl elapsed");
               callbacks.audio({ type: "activity", state: "idle" });
               lifecycle.beforeModelUpdate();
-              if (calls.includes("control.overlay")) throw new Error("idle activity retained a prior overlay action");
+              if (values.get("control.overlay") !== 0) throw new Error("idle activity retained a prior overlay action");
               calls.length = 0;
               callbacks.audio({ type: "activity", state: "future-state" });
               lifecycle.beforeModelUpdate();
-              if (calls.includes("control.overlay")) throw new Error("unknown activity applied a configured overlay");
+              if (values.get("control.overlay") !== 0) throw new Error("unknown activity applied a configured overlay");
               callbacks.avatar({ avatar_id: "demo-avatar", revision: 5, actions: ["toggle.base"] });
               values.set("control.base", 0); values.set("control.overlay", 0); calls.length = 0;
               callbacks.audio({ type: "activity", state: "cli" });
@@ -1028,6 +1047,61 @@ print(json.dumps(payload))
               if (values.get("control.base") !== 1 || values.get("control.overlay") !== 0) {
                 throw new Error("child curation did not clear inherited suppression without replacing routed state");
               }
+              callbacks.snapshot({
+                schema: "presence/renderer-snapshot/v0.2",
+                binding_id: "ebf6ea73-9ef8-4b06-bb3e-dab542e10440",
+                revision: 10,
+                avatar_ref: "demo-avatar@1",
+                model_fingerprint: "sha256:" + "1".repeat(64),
+                preset_ref: null,
+                semantic: { persistent_actions: ["toggle.base"], effective_actions: ["toggle.base"], activity: null },
+                renderer: { visible: true, progress_visible: true, kind: "live2d" },
+                capabilities: ["semantic-slots"],
+              });
+              callbacks.presenceEvent({ type: "activity", state: "thinking", binding_id: "ebf6ea73-9ef8-4b06-bb3e-dab542e10440" });
+              clockMs = 1000;
+              const presentationPromise = callbacks.presentation({
+                schema: "presence/presentation-cue/v0.1",
+                binding_id: "ebf6ea73-9ef8-4b06-bb3e-dab542e10440",
+                configuration_revision: 10,
+                sequence: 1,
+                event_id: "thinking:1",
+                activity: "thinking",
+                base_actions: ["toggle.base"],
+                target_actions: ["toggle.overlay"],
+                enter_ms: 180,
+                minimum_visible_ms: 900,
+                exit_ms: 180,
+                easing: "easeInOutCubic",
+              });
+              lifecycle.beforeModelUpdate();
+              if (values.get("control.base") !== 1 || values.get("control.overlay") !== 0) {
+                throw new Error("presentation did not begin from the persistent base");
+              }
+              clockMs = 1090;
+              lifecycle.beforeModelUpdate();
+              if (Math.abs(values.get("control.base") - 0.5) > 0.0001 || Math.abs(values.get("control.overlay") - 0.5) > 0.0001) {
+                throw new Error("presentation entry easing was not deterministic");
+              }
+              clockMs = 1899;
+              lifecycle.beforeModelUpdate();
+              if (values.get("control.base") !== 0 || values.get("control.overlay") !== 1) {
+                throw new Error("presentation exited before its 900 ms minimum lifetime");
+              }
+              clockMs = 1990;
+              lifecycle.beforeModelUpdate();
+              if (Math.abs(values.get("control.base") - 0.5) > 0.0001 || Math.abs(values.get("control.overlay") - 0.5) > 0.0001) {
+                throw new Error("presentation exit easing was not deterministic");
+              }
+              clockMs = 2080;
+              lifecycle.beforeModelUpdate();
+              const presentationResult = await presentationPromise;
+              if (presentationResult.status !== "completed" || values.get("control.base") !== 1 || values.get("control.overlay") !== 0) {
+                throw new Error("presentation completion did not restore the persistent base");
+              }
+              if (cssProperties.get("--accent") !== "#8071ff") {
+                throw new Error("finite pose completion incorrectly cleared ongoing activity telemetry");
+              }
               callbacks.avatar({ avatar_id: "demo-avatar", revision: 6, actions: [] });
               calls.length = 0; setCalls.length = 0; positionCalls.length = 0; model.rotation = 0;
               callbacks.audio({ type: "state", state: "speaking" });
@@ -1049,9 +1123,63 @@ print(json.dumps(payload))
               const jaw = setCalls.filter(([id]) => id === "rig.jaw").at(-1);
               if (!mouth || !(mouth[1] > 0.1 && mouth[1] <= 0.46)) throw new Error("speech mouth was not softly driven");
               if (!jaw || !(jaw[1] > mouth[1] && jaw[1] <= 0.76)) throw new Error("speech cadence did not reach the jaw control");
+              callbacks.audio({ type: "state", state: "idle" });
+              for (let frame = 0; frame < 100; frame += 1) {
+                clockMs += 16;
+                lifecycle.beforeModelUpdate();
+              }
+              callbacks.snapshot({
+                schema: "presence/renderer-snapshot/v0.2",
+                binding_id: "ebf6ea73-9ef8-4b06-bb3e-dab542e10440",
+                revision: 11,
+                avatar_ref: "demo-avatar@1",
+                model_fingerprint: "sha256:" + "1".repeat(64),
+                preset_ref: null,
+                semantic: { persistent_actions: ["semantic.mouth", "semantic.jaw"], effective_actions: ["semantic.mouth", "semantic.jaw"], activity: null },
+                renderer: { visible: true, progress_visible: true, kind: "live2d" },
+                capabilities: ["semantic-slots"],
+              });
+              lifecycle.beforeModelUpdate();
+              if (Math.abs(values.get("rig.mouth.primary") - 0.72) > 0.0001 || Math.abs(values.get("rig.jaw") - 0.58) > 0.0001) {
+                throw new Error("silent speech controls erased the semantic mouth or jaw base");
+              }
+              callbacks.audio({ type: "state", state: "speaking" });
+              callbacks.audio({ type: "audio", amplitude: 1, bands: [1, 0.9, 0.7] });
+              const cadenceSamples = [];
+              for (let frame = 0; frame < 12; frame += 1) {
+                clockMs += 16;
+                lifecycle.beforeModelUpdate();
+                cadenceSamples.push(values.get("rig.mouth.primary"));
+              }
+              if (cadenceSamples.every((value) => Math.abs(value - 0.72) < 0.0001)) {
+                throw new Error("semantic mouth state froze live speech cadence");
+              }
+              callbacks.audio({ type: "state", state: "idle" });
+              for (let frame = 0; frame < 100; frame += 1) {
+                clockMs += 16;
+                lifecycle.beforeModelUpdate();
+              }
+              if (Math.abs(values.get("rig.mouth.primary") - 0.72) > 0.0001 || Math.abs(values.get("rig.jaw") - 0.58) > 0.0001) {
+                throw new Error("speech release did not restore the semantic mouth or jaw base");
+              }
+              callbacks.snapshot({
+                schema: "presence/renderer-snapshot/v0.2",
+                binding_id: "ebf6ea73-9ef8-4b06-bb3e-dab542e10440",
+                revision: 12,
+                avatar_ref: "demo-avatar@1",
+                model_fingerprint: "sha256:" + "1".repeat(64),
+                preset_ref: null,
+                semantic: { persistent_actions: [], effective_actions: [], activity: null },
+                renderer: { visible: true, progress_visible: true, kind: "live2d" },
+                capabilities: ["semantic-slots"],
+              });
+              lifecycle.beforeModelUpdate();
+              if (values.get("rig.mouth.primary") !== 0 || values.get("rig.jaw") !== 0) {
+                throw new Error("removed semantic mouth controls did not reset to Cubism defaults");
+              }
               if (positionCalls.length !== 0 || model.rotation !== 0) throw new Error("speech motion still shakes the full model node");
               if (indexLookups.length !== startupLookupCount) throw new Error("renderer repeated Cubism parameter-id scans after startup");
-              process.stdout.write(JSON.stringify({ lifecycle: true, responsiveResize: true, haloConfig: true, activityOverlay: true, activityExpiry: true, activitySuppress: true, childCuration: true, reset: true, replacement: true, replayOrder: true, rigMotion: true, eyelids: true, jaw: true }));
+              process.stdout.write(JSON.stringify({ lifecycle: true, responsiveResize: true, centralResize: true, haloConfig: true, activityOverlay: true, activityExpiry: true, activitySuppress: true, childCuration: true, timedPresentation: true, reset: true, replacement: true, replayOrder: true, rigMotion: true, eyelids: true, jaw: true, cadenceOverlap: true }));
             }));
             """
         )
@@ -1066,7 +1194,7 @@ print(json.dumps(payload))
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertEqual(
             json.loads(result.stdout),
-            {"lifecycle": True, "responsiveResize": True, "haloConfig": True, "activityOverlay": True, "activityExpiry": True, "activitySuppress": True, "childCuration": True, "reset": True, "replacement": True, "replayOrder": True, "rigMotion": True, "eyelids": True, "jaw": True},
+            {"lifecycle": True, "responsiveResize": True, "centralResize": True, "haloConfig": True, "activityOverlay": True, "activityExpiry": True, "activitySuppress": True, "childCuration": True, "timedPresentation": True, "reset": True, "replacement": True, "replayOrder": True, "rigMotion": True, "eyelids": True, "jaw": True, "cadenceOverlap": True},
         )
 
     def test_local_cubism_fork_keeps_the_per_frame_physics_loop_allocation_free(self) -> None:

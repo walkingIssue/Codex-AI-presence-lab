@@ -26,6 +26,12 @@ class FakeTimeline:
     def finish(self) -> None:
         return None
 
+    def pause(self) -> None:
+        return None
+
+    def resume(self) -> None:
+        return None
+
 
 class FakeStdin:
     def __init__(self, owner: "FakePlayer", first_write: threading.Event) -> None:
@@ -123,6 +129,7 @@ class StreamPauseTests(unittest.TestCase):
             voices.write_bytes(b"voices")
             stop = root / "tts-stop.request"
             resume = root / "tts-resume.request"
+            cancel = root / "tts-cancel.request"
             progress = root / "tts-progress.json"
             player_pid = root / "tts-player.pid"
             first_write = threading.Event()
@@ -150,6 +157,7 @@ class StreamPauseTests(unittest.TestCase):
                 patch.object(speak, "VOICES_PATH", voices),
                 patch.object(speak, "STOP_REQUEST_PATH", stop),
                 patch.object(speak, "RESUME_REQUEST_PATH", resume),
+                patch.object(speak, "CANCEL_REQUEST_PATH", cancel),
                 patch.object(speak, "PROGRESS_PATH", progress),
                 patch.object(speak, "PLAYER_PID_PATH", player_pid),
                 patch.object(speak, "configured_model_path", return_value=model),
@@ -192,6 +200,104 @@ class StreamPauseTests(unittest.TestCase):
                     sum(len(player.writes) for player in players),
                     writes_while_paused,
                 )
+            finally:
+                for active_patch in reversed(patches):
+                    active_patch.stop()
+
+    def test_quality_playback_pauses_and_resumes_from_the_buffered_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "speech.wav"
+            audio.write_bytes(b"buffered-audio")
+            stop = root / "tts-stop.request"
+            resume = root / "tts-resume.request"
+            cancel = root / "tts-cancel.request"
+            players = []
+            errors: list[BaseException] = []
+
+            class FilePlayer:
+                next_pid = 2000
+
+                def __init__(self, command):
+                    type(self).next_pid += 1
+                    self.pid = type(self).next_pid
+                    self.command = command
+                    self.terminated = False
+                    self.polls = 0
+                    self.started = threading.Event()
+                    self.started.set()
+
+                def poll(self):
+                    self.polls += 1
+                    if self.terminated:
+                        return 0
+                    if len(players) > 1 and self.polls > 3:
+                        return 0
+                    return None
+
+                def terminate(self):
+                    self.terminated = True
+
+                def kill(self):
+                    self.terminated = True
+
+                def wait(self, timeout=None):
+                    self.terminated = True
+                    return 0
+
+            def start_player(command, **_kwargs):
+                player = FilePlayer(command)
+                players.append(player)
+                return player
+
+            def run() -> None:
+                try:
+                    speak.play_audio(
+                        audio,
+                        event_id="quality-1",
+                        text="Buffered quality speech",
+                        interruptible=False,
+                        pauseable=True,
+                    )
+                except BaseException as exc:
+                    errors.append(exc)
+
+            patches = (
+                patch.object(speak, "STOP_REQUEST_PATH", stop),
+                patch.object(speak, "RESUME_REQUEST_PATH", resume),
+                patch.object(speak, "CANCEL_REQUEST_PATH", cancel),
+                patch.object(speak, "ffplay_executable", return_value="ffplay"),
+                patch.object(speak, "orb_is_enabled", return_value=False),
+                patch.object(speak, "configured_volume", return_value=20),
+                patch.object(speak, "write_player_pid"),
+                patch.object(speak, "clear_player_pid"),
+                patch.object(speak, "write_tts_progress"),
+                patch.object(speak, "clear_tts_progress"),
+                patch.object(speak, "hook_log"),
+                patch.object(speak.subprocess, "Popen", side_effect=start_player),
+            )
+            for active_patch in patches:
+                active_patch.start()
+            try:
+                thread = threading.Thread(target=run, daemon=True)
+                thread.start()
+                deadline = time.monotonic() + 2
+                while not players and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(players, "quality playback did not start")
+                time.sleep(0.06)
+                stop.write_text("pause\n", encoding="utf-8")
+                deadline = time.monotonic() + 2
+                while not players[0].terminated and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(players[0].terminated, "quality sink did not pause")
+                self.assertTrue(thread.is_alive(), "quality playback ended instead of pausing")
+                resume.write_text("resume\n", encoding="utf-8")
+                thread.join(timeout=3)
+                self.assertFalse(thread.is_alive(), "quality playback did not resume")
+                self.assertEqual(errors, [])
+                self.assertGreaterEqual(len(players), 2)
+                self.assertIn("-ss", players[1].command)
             finally:
                 for active_patch in reversed(patches):
                     active_patch.stop()

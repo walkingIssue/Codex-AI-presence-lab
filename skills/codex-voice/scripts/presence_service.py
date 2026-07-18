@@ -129,7 +129,11 @@ class PresenceService:
         self.playback = playback
         self.adapter_name = _bounded_source(adapter_name)
         self.profiles = profile_registry or ProfileRegistry(self.project_root, self.voice_root)
-        self.emitter = ActivityEmitter(voice_root=self.voice_root)
+        self.emitter = (
+            None
+            if callable(getattr(playback, "publish_activity", None))
+            else ActivityEmitter(voice_root=self.voice_root)
+        )
         self._lock = threading.Lock()
         self._sequence = 0
         self._running = False
@@ -175,14 +179,16 @@ class PresenceService:
 
     def close(self) -> None:
         if not self._running:
-            self.emitter.close()
+            if self.emitter is not None:
+                self.emitter.close()
             return
         try:
             self.playback.close()
         finally:
             self._running = False
             self._lifecycle("stopped")
-            self.emitter.close()
+            if self.emitter is not None:
+                self.emitter.close()
 
     def publish_activity(
         self,
@@ -212,6 +218,19 @@ class PresenceService:
             },
         )
         self.inbox.set_state(ACTIVITY_STATE_KEY, event.as_dict())
+        publish = getattr(self.playback, "publish_activity", None)
+        if callable(publish):
+            return bool(
+                publish(
+                    state,
+                    session_id=session_id,
+                    event_id=(
+                        f"activity:{self.adapter_name}:{session_id or 'project'}:"
+                        f"{event.sequence}:{state}"
+                    ),
+                )
+            )
+        assert self.emitter is not None
         return self.emitter.send(
             state,
             source=_bounded_source(source),

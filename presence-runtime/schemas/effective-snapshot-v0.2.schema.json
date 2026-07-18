@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walkingissue.local/presence/effective-snapshot-v0.2.schema.json",
+  "title": "Presence Runtime v0.2 Effective Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "binding_id", "revision", "profile_ref", "avatar_ref", "model_fingerprint", "preset_ref", "tts", "semantic", "renderer", "capabilities", "provenance", "validation", "last_known_good"],
+  "properties": {
+    "schema": {"const": "presence/effective-snapshot/v0.2"},
+    "binding_id": {"type": "string", "format": "uuid"},
+    "revision": {"type": "integer", "minimum": 1},
+    "profile_ref": {"type": ["string", "null"]},
+    "avatar_ref": {"type": "string", "minLength": 1},
+    "model_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "preset_ref": {"type": ["string", "null"]},
+    "tts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["voice_id", "speed", "playback_mode", "volume", "commentary_ratio"],
+      "properties": {
+        "voice_id": {"type": "string"},
+        "speed": {"type": "number"},
+        "playback_mode": {"enum": ["stream", "quality"]},
+        "volume": {"type": "integer"},
+        "commentary_ratio": {"type": "number"}
+      }
+    },
+    "semantic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["persistent_actions", "effective_actions", "activity"],
+      "properties": {
+        "persistent_actions": {"type": "array", "items": {"type": "string"}},
+        "effective_actions": {"type": "array", "items": {"type": "string"}},
+        "activity": {"type": ["string", "null"]}
+      }
+    },
+    "renderer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["visible", "progress_visible", "kind"],
+      "properties": {
+        "visible": {"type": "boolean"},
+        "progress_visible": {"type": "boolean"},
+        "kind": {"enum": ["builtin", "live2d"]}
+      }
+    },
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "provenance": {"type": "object", "additionalProperties": {"type": "string"}},
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valid", "diagnostics"],
+      "properties": {
+        "valid": {"type": "boolean"},
+        "diagnostics": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "last_known_good": {"type": "boolean"}
+  }
+}

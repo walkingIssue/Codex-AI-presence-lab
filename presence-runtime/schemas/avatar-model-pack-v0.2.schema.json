@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walkingissue.local/presence/avatar-model-pack-v0.2.schema.json",
+  "title": "Presence Runtime v0.2 Avatar Model Pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "avatar_id", "version", "model_fingerprint", "renderer", "semantic_slots", "actions", "safe_defaults", "capabilities"],
+  "properties": {
+    "schema": {"const": "presence/avatar-model-pack/v0.2"},
+    "avatar_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "version": {"type": "integer", "minimum": 1},
+    "model_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "renderer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "entrypoint"],
+      "properties": {
+        "kind": {"enum": ["builtin", "live2d"]},
+        "entrypoint": {"type": "string", "minLength": 1},
+        "minimum_runtime": {"type": "string"}
+        ,"scale": {"type": "number"}
+        ,"bottom_inset": {"type": "number"}
+        ,"halo": {"type": "object"}
+        ,"fixed_parameters": {"type": "array", "items": {"type": "object"}}
+        ,"fixed_parts": {"type": "array", "items": {"type": "object"}}
+        ,"speech_motion": {"type": "object"}
+      }
+    },
+    "semantic_slots": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9._-]{0,127}$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["exclusive"],
+        "properties": {
+          "exclusive": {"type": "boolean"},
+          "description": {"type": "string", "maxLength": 512}
+        }
+      }
+    },
+    "actions": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9._-]{0,127}$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slots"],
+        "properties": {
+          "label": {"type": "string", "maxLength": 256},
+          "description": {"type": "string", "maxLength": 1024},
+          "slots": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string"}
+          },
+          "operations": {"type": "array", "items": {"type": "object"}}
+        }
+      }
+    },
+    "safe_defaults": {"$ref": "#/$defs/semanticSelection"},
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$"}
+    }
+  },
+  "$defs": {
+    "activityRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "add": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "semanticSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "slots": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9._-]{0,127}$"},
+          "additionalProperties": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string"}
+          }
+        },
+        "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "activity": {"type": "object", "additionalProperties": {"$ref": "#/$defs/activityRule"}}
+      }
+    }
+  }
+}

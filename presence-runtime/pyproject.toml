@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-presence-runtime"
+version = "0.2.0.dev0"
+description = "Authoritative user-level voice and avatar presence runtime"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+presence = "presence_runtime.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "../live2d-avatar-runtime/src"]

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walkingissue.local/presence/preset-v0.2.schema.json",
+  "title": "Presence Runtime v0.2 Preset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "preset_id", "revision", "compatible_model_fingerprints", "semantic"],
+  "properties": {
+    "schema": {"const": "presence/preset/v0.2"},
+    "preset_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "revision": {"type": "integer", "minimum": 1},
+    "compatible_model_fingerprints": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    },
+    "semantic": {"$ref": "#/$defs/semanticSelection"}
+  },
+  "$defs": {
+    "activityRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "add": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "semanticSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "slots": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9._-]{0,127}$"},
+          "additionalProperties": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string"}
+          }
+        },
+        "clear_slots": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "activity": {"type": "object", "additionalProperties": {"$ref": "#/$defs/activityRule"}}
+      }
+    }
+  }
+}

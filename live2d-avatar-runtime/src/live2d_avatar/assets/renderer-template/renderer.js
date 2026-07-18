@@ -5,8 +5,31 @@
   if (!config || typeof config !== "object") {
     throw new Error("Live2D avatar capabilities did not load");
   }
-  if (config.state_semantics !== "active-toggle-set") {
-    throw new Error("Live2D avatar does not declare active-toggle-set semantics");
+  const loadDiagnostics = {
+    stage: "initializing-capabilities",
+    modelPath: typeof config.model?.path === "string" ? config.model.path : null,
+    startedAt: Date.now(),
+  };
+  window.__PRESENCE_LIVE2D_DIAGNOSTICS__ = loadDiagnostics;
+
+  function markLoadStage(stage) {
+    loadDiagnostics.stage = stage;
+    loadDiagnostics.elapsedMs = Date.now() - loadDiagnostics.startedAt;
+  }
+
+  window.addEventListener("error", (event) => {
+    markLoadStage("failed");
+    loadDiagnostics.error = String(event.error?.message || event.message || "renderer error");
+    window.presenceRenderer?.failed(loadDiagnostics.error);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    markLoadStage("failed");
+    loadDiagnostics.error = String(event.reason?.message || event.reason || "renderer rejection");
+    window.presenceRenderer?.failed(loadDiagnostics.error);
+  });
+
+  if (!["active-toggle-set", "resolved-effective-snapshot"].includes(config.state_semantics)) {
+    throw new Error(`Live2D avatar declares unsupported state semantics: ${config.state_semantics}`);
   }
 
   const FALLBACK_WIDTH = 440;
@@ -133,6 +156,7 @@
   let speechEnergy = 0;
   let eyelidEnergy = 0;
   let mouthEnergy = 0;
+  let speechMix = 0;
   let app;
   let model;
   let coreModel;
@@ -147,7 +171,12 @@
   let avatarStateApplied = false;
   let activityExpiresAt = 0;
   let composedOperations = [];
+  let composedSemanticValues = new Map();
+  let effectiveRevision = null;
+  let currentPresentation = null;
+  const semanticFrameResult = { values: composedSemanticValues, presentation: null, status: null };
   const parameterIndices = new Map();
+  const semanticParameterDefaults = new Map();
   let fallbackMouthPrimaryIndex = -1;
   let fallbackMouthSecondaryIndex = -1;
   let angleXIndex = -1;
@@ -157,6 +186,7 @@
   let lastHaloUpdateAt = -Infinity;
   let moveMode = false;
   let dragging = false;
+  markLoadStage("capabilities-initialized");
 
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
@@ -255,9 +285,21 @@
   function resolveModelBindings() {
     for (const fixed of fixedParameters) fixed.parameterIndex = resolveParameterIndex(fixed.parameterId);
     for (const fixed of fixedParts) fixed.partIndex = coreModel.getPartIndex(fixed.partId);
-    for (const operation of safeDefaults) operation.parameterIndex = resolveParameterIndex(operation.parameterId);
+    for (const operation of safeDefaults) {
+      operation.parameterIndex = resolveParameterIndex(operation.parameterId);
+      const defaultValue = coreModel.getParameterDefaultValue(operation.parameterIndex);
+      if (Number.isFinite(defaultValue)) {
+        semanticParameterDefaults.set(operation.parameterIndex, defaultValue);
+      }
+    }
     for (const action of actionsInReplayOrder) {
-      for (const operation of action.operations) operation.parameterIndex = resolveParameterIndex(operation.parameterId);
+      for (const operation of action.operations) {
+        operation.parameterIndex = resolveParameterIndex(operation.parameterId);
+        const defaultValue = coreModel.getParameterDefaultValue(operation.parameterIndex);
+        if (Number.isFinite(defaultValue)) {
+          semanticParameterDefaults.set(operation.parameterIndex, defaultValue);
+        }
+      }
     }
     for (const target of speechMotionTargets) target.parameterIndex = resolveParameterIndex(target.parameterId);
     if (mouthMotion) {
@@ -297,6 +339,148 @@
       for (const operation of action.operations) append(operation);
     }
     composedOperations = overwrite.concat(add, multiply);
+    if (coreModel) composedSemanticValues = compileSemanticValues(composedOperations);
+  }
+
+  function operationsForActions(actionIds) {
+    const selected = new Set(knownActionIds(actionIds));
+    const overwrite = [];
+    const add = [];
+    const multiply = [];
+    const append = (operation) => {
+      if (operation.blend === OPERATION_SET) overwrite.push(operation);
+      else if (operation.blend === OPERATION_MULTIPLY) multiply.push(operation);
+      else add.push(operation);
+    };
+    for (const operation of safeDefaults) append(operation);
+    for (const action of actionsInReplayOrder) {
+      if (!selected.has(action.id)) continue;
+      for (const operation of action.operations) append(operation);
+    }
+    return overwrite.concat(add, multiply);
+  }
+
+  function compileSemanticValues(operations) {
+    const values = new Map(semanticParameterDefaults);
+    for (const operation of operations) {
+      const fallback = semanticParameterDefaults.get(operation.parameterIndex) || 0;
+      const current = values.has(operation.parameterIndex)
+        ? values.get(operation.parameterIndex)
+        : fallback;
+      if (operation.blend === OPERATION_ADD) {
+        values.set(operation.parameterIndex, current + operation.value);
+      } else if (operation.blend === OPERATION_MULTIPLY) {
+        values.set(operation.parameterIndex, current * operation.value);
+      } else {
+        values.set(operation.parameterIndex, operation.value);
+      }
+    }
+    return values;
+  }
+
+  function blendSemanticValues(base, target, weight, values, indices) {
+    for (const index of indices) {
+      const fallback = semanticParameterDefaults.get(index) || 0;
+      const start = base.has(index) ? base.get(index) : fallback;
+      const end = target.has(index) ? target.get(index) : fallback;
+      values.set(index, start + (end - start) * weight);
+    }
+    return values;
+  }
+
+  function easeInOutCubic(value) {
+    const normalized = clamp(value, 0, 1);
+    return normalized < 0.5
+      ? 4 * normalized * normalized * normalized
+      : 1 - Math.pow(-2 * normalized + 2, 3) / 2;
+  }
+
+  function presentationFrame(nowMilliseconds) {
+    const presentation = currentPresentation;
+    if (!presentation) {
+      semanticFrameResult.values = composedSemanticValues;
+      semanticFrameResult.presentation = null;
+      semanticFrameResult.status = null;
+      return semanticFrameResult;
+    }
+    if (presentation.cancelRequested) {
+      semanticFrameResult.values = presentation.baseValues;
+      semanticFrameResult.presentation = presentation;
+      semanticFrameResult.status = "cancelled";
+      return semanticFrameResult;
+    }
+    const elapsed = Math.max(0, nowMilliseconds - presentation.startedAt);
+    let weight = 1;
+    let status = null;
+    if (elapsed < presentation.cue.enter_ms) {
+      weight = easeInOutCubic(elapsed / Math.max(1, presentation.cue.enter_ms));
+    } else if (elapsed >= presentation.cue.minimum_visible_ms) {
+      const exitElapsed = elapsed - presentation.cue.minimum_visible_ms;
+      if (exitElapsed >= presentation.cue.exit_ms) {
+        weight = 0;
+        status = "completed";
+      } else {
+        weight = 1 - easeInOutCubic(exitElapsed / Math.max(1, presentation.cue.exit_ms));
+      }
+    }
+    semanticFrameResult.values = blendSemanticValues(
+        presentation.baseValues,
+        presentation.targetValues,
+        weight,
+        presentation.frameValues,
+        presentation.parameterIndices,
+      );
+    semanticFrameResult.presentation = presentation;
+    semanticFrameResult.status = status;
+    return semanticFrameResult;
+  }
+
+  function applySemanticValues(values) {
+    for (const [parameterIndex, defaultValue] of semanticParameterDefaults) {
+      setParameter(parameterIndex, defaultValue);
+    }
+    for (const [parameterIndex, value] of values) {
+      setParameter(parameterIndex, value);
+    }
+  }
+
+  function applyPresentationCue(cue) {
+    if (!cue || cue.schema !== "presence/presentation-cue/v0.1") {
+      throw new Error("unsupported semantic presentation cue");
+    }
+    if (cue.configuration_revision !== effectiveRevision) {
+      throw new Error("semantic presentation cue targets a stale snapshot");
+    }
+    if (currentPresentation) {
+      throw new Error("semantic presentation cue arrived before the active cue completed");
+    }
+    const baseActions = knownActionIds(cue.base_actions);
+    const targetActions = knownActionIds(cue.target_actions);
+    if (baseActions.length !== cue.base_actions.length
+        || targetActions.length !== cue.target_actions.length) {
+      throw new Error("semantic presentation cue references an unknown action");
+    }
+    return new Promise((resolve) => {
+      const baseValues = compileSemanticValues(operationsForActions(baseActions));
+      const targetValues = compileSemanticValues(operationsForActions(targetActions));
+      currentPresentation = {
+        cue,
+        startedAt: performance.now(),
+        baseValues,
+        targetValues,
+        frameValues: new Map(),
+        parameterIndices: new Set([...baseValues.keys(), ...targetValues.keys()]),
+        cancelRequested: false,
+        resolve,
+      };
+    });
+  }
+
+  function cancelPresentationCue(payload) {
+    if (!currentPresentation) return;
+    if (Number.isInteger(payload?.sequence)
+        && payload.sequence !== currentPresentation.cue.sequence) return;
+    currentPresentation.cancelRequested = true;
   }
 
   function applyActivityRule() {
@@ -374,6 +558,15 @@
     }
   }
 
+  function parameterValue(index) {
+    if (index < 0) return 0;
+    if (typeof coreModel.getParameterValueByIndex === "function") {
+      const value = coreModel.getParameterValueByIndex(index);
+      if (Number.isFinite(value)) return value;
+    }
+    return semanticParameterDefaults.get(index) || 0;
+  }
+
   function applyFixedControls() {
     for (const fixed of fixedParameters) setParameter(fixed.parameterIndex, fixed.value);
     for (const fixed of fixedParts) {
@@ -410,6 +603,25 @@
     });
   }
 
+  function applyEffectiveSnapshot(snapshot) {
+    if (!snapshot || snapshot.schema !== "presence/renderer-snapshot/v0.2") return;
+    if (!snapshot.semantic || !Array.isArray(snapshot.semantic.persistent_actions)) return;
+    const avatarId = String(snapshot.avatar_ref || "").split("@", 1)[0];
+    if (avatarId && avatarId !== config.avatar_id) {
+      throw new Error(`Resolved avatar ${avatarId} does not match renderer ${config.avatar_id}`);
+    }
+    avatarStateApplied = true;
+    effectiveRevision = snapshot.revision;
+    activeActionIds = new Set(knownActionIds(snapshot.semantic.persistent_actions));
+    // v0.2 activity gestures arrive as finite presentation cues. Never
+    // re-resolve the model's legacy activity table in JavaScript.
+    activityActions = {};
+    if (typeof snapshot.semantic.activity === "string") {
+      activity = snapshot.semantic.activity;
+    }
+    rebuildComposedOperations();
+  }
+
   function fitModel() {
     const bounds = model.getLocalBounds();
     if (!(bounds.width > 0 && bounds.height > 0)) throw new Error("Avatar has no drawable bounds");
@@ -438,31 +650,61 @@
     if (mouthMotion) {
       mouthEnergy += (voiceInput - mouthEnergy) * (speaking ? mouthMotion.attack : mouthMotion.release);
     }
+    const mixAttack = mouthMotion ? mouthMotion.attack : 0.22;
+    const mixRelease = mouthMotion ? mouthMotion.release : 0.1;
+    speechMix += ((speaking ? 1 : 0) - speechMix) * (speaking ? mixAttack : mixRelease);
+    if (!speaking && speechMix < 0.0001) speechMix = 0;
     const breath = Math.sin(now * 1.15);
     const headTilt = Math.sin(now * 0.72) * 0.75 + speechEnergy * Math.sin(now * 2.1) * 0.3;
 
+    // Persistent and timed semantic values are established first. Procedural
+    // speech then mixes against that exact base so neither lane can erase the
+    // other merely because both touch a mouth, jaw, or body parameter.
+    const semanticFrame = presentationFrame(nowMilliseconds);
+    applySemanticValues(semanticFrame.values);
+
     if (mouthMotion) {
-      const mouthOpen = speaking ? clamp(mouthMotion.baseOpen + mouthEnergy * mouthMotion.mouthGain, 0, 1) : 0;
-      const jawOpen = speaking ? clamp(mouthEnergy * mouthMotion.jawGain, 0, 1) : 0;
-      setParameter(mouthMotion.primaryParameterIndex, mouthOpen);
+      const mouthTarget = clamp(mouthMotion.baseOpen + mouthEnergy * mouthMotion.mouthGain, 0, 1);
+      const jawTarget = clamp(mouthEnergy * mouthMotion.jawGain, 0, 1);
+      const primaryBase = parameterValue(mouthMotion.primaryParameterIndex);
+      setParameter(
+        mouthMotion.primaryParameterIndex,
+        primaryBase + (mouthTarget - primaryBase) * speechMix,
+      );
       if (mouthMotion.secondaryParameterIndex >= 0) {
-        setParameter(mouthMotion.secondaryParameterIndex, mouthOpen * mouthMotion.secondaryGain);
+        const secondaryBase = parameterValue(mouthMotion.secondaryParameterIndex);
+        const secondaryTarget = mouthTarget * mouthMotion.secondaryGain;
+        setParameter(
+          mouthMotion.secondaryParameterIndex,
+          secondaryBase + (secondaryTarget - secondaryBase) * speechMix,
+        );
       }
-      if (mouthMotion.jawParameterIndex >= 0) setParameter(mouthMotion.jawParameterIndex, jawOpen);
+      if (mouthMotion.jawParameterIndex >= 0) {
+        const jawBase = parameterValue(mouthMotion.jawParameterIndex);
+        setParameter(
+          mouthMotion.jawParameterIndex,
+          jawBase + (jawTarget - jawBase) * speechMix,
+        );
+      }
     } else {
-      const mouth = speaking ? clamp(0.06 + amplitude * 1.15 + bandEnergy * 0.25, 0, 1) : 0;
-      setParameter(fallbackMouthPrimaryIndex, mouth);
-      setParameter(fallbackMouthSecondaryIndex, mouth * 0.82);
+      const mouthTarget = clamp(0.06 + amplitude * 1.15 + bandEnergy * 0.25, 0, 1);
+      if (speechMix > 0) {
+        const primaryBase = parameterValue(fallbackMouthPrimaryIndex);
+        const secondaryBase = parameterValue(fallbackMouthSecondaryIndex);
+        setParameter(
+          fallbackMouthPrimaryIndex,
+          primaryBase + (mouthTarget - primaryBase) * speechMix,
+        );
+        setParameter(
+          fallbackMouthSecondaryIndex,
+          secondaryBase + (mouthTarget * 0.82 - secondaryBase) * speechMix,
+        );
+      }
     }
     for (const target of speechMotionTargets) {
       const phase = now * target.angularFrequency + target.phase;
       addParameter(target.parameterIndex, Math.sin(phase) * (target.idleGain + speechEnergy * target.speechGain));
     }
-    // Cubism has saved the motion baseline immediately before this hook and will
-    // restore it after drawing. Applying relative expression operations here
-    // makes the complete action state frame-local rather than cumulative.
-    for (const operation of composedOperations) applyOperation(operation);
-    applyFixedControls();
     if (eyelidMotion) {
       const idlePhase = now * eyelidMotion.idleFrequency * Math.PI * 2;
       const idleOpenness = eyelidMotion.idleOpenMin
@@ -480,6 +722,11 @@
     addParameter(angleXIndex, Math.sin(now * 0.5) * 1.1);
     addParameter(angleYIndex, breath * 0.7);
     addParameter(angleZIndex, headTilt);
+    applyFixedControls();
+    if (semanticFrame.status && currentPresentation === semanticFrame.presentation) {
+      currentPresentation = null;
+      semanticFrame.presentation.resolve({ status: semanticFrame.status });
+    }
     if (haloEnabled && nowMilliseconds - lastHaloUpdateAt >= HALO_UPDATE_INTERVAL_MS) {
       const energy = clamp(0.14 + amplitude * 0.82 + bandEnergy * 0.2 + (activity === "idle" ? 0 : 0.08), 0.12, 1);
       if (lastHaloEnergy < 0 || Math.abs(energy - lastHaloEnergy) >= HALO_ENERGY_EPSILON) {
@@ -519,10 +766,18 @@
     window.orbApi.onMoveMode(setMoveMode);
     window.orbApi.onResizeMode?.(setResizeMode);
     window.orbApi.onWindowResize?.(resizeViewport);
-    window.addEventListener("resize", () => resizeViewport());
+  }
+
+  function attachPresenceBridge() {
+    if (!window.presenceRenderer) return;
+    window.presenceRenderer.onSnapshot(applyEffectiveSnapshot);
+    window.presenceRenderer.onEvent(applyAudioEvent);
+    window.presenceRenderer.onPresentation?.(applyPresentationCue);
+    window.presenceRenderer.onPresentationCancel?.(cancelPresentationCue);
   }
 
   async function start() {
+    markLoadStage("validating-runtime");
     if (!window.PIXI?.live2d?.Live2DModel) throw new Error("Local Live2D renderer did not load");
     if (!config.model || typeof config.model.path !== "string") throw new Error("Avatar capabilities have no model path");
     PIXI.live2d.CubismConfig.supportMoreMaskDivisions = true;
@@ -540,11 +795,13 @@
       powerPreference: "high-performance",
       resolution: RENDER_RESOLUTION,
     });
+    markLoadStage("loading-model");
     model = await PIXI.live2d.Live2DModel.from(config.model.path, {
       autoInteract: false,
       autoFocus: false,
       autoUpdate: false,
     });
+    markLoadStage("model-loaded");
     model.interactive = false;
     model.interactiveChildren = false;
     app.stage.interactiveChildren = false;
@@ -559,15 +816,27 @@
       throw new Error("Live2D model does not expose indexed Cubism parameters");
     }
     resolveModelBindings();
+    markLoadStage("model-bound");
     rebuildComposedOperations();
     internalModel.on("beforeModelUpdate", renderAvatar);
     const updatePriority = Number(PIXI.UPDATE_PRIORITY?.HIGH) || 25;
     app.ticker.add(() => model.update(app.ticker.elapsedMS), null, updatePriority);
     app.start();
     applyActivityRule();
+    markLoadStage("ready");
     console.info("Live2D avatar state renderer ready", config.avatar_id);
+    window.presenceRenderer?.ready();
   }
 
   attachOrbBridge();
-  start().catch((error) => console.error("Live2D avatar load failed", error));
+  attachPresenceBridge();
+  // BrowserWindow viewport changes are native DOM resize events in the v0.2
+  // central host. Keep this independent of the legacy Orb-only IPC bridge.
+  window.addEventListener("resize", () => resizeViewport());
+  start().catch((error) => {
+    markLoadStage("failed");
+    loadDiagnostics.error = String(error?.message || error);
+    console.error("Live2D avatar load failed", error);
+    window.presenceRenderer?.failed(String(error?.message || error));
+  });
 })();

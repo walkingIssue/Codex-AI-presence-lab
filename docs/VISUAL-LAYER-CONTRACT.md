@@ -13,6 +13,7 @@ The visual layer has three independent lanes:
 | Lane | Event types | Purpose |
 | --- | --- | --- |
 | Activity | `activity` | Why the host is busy: thinking, tool work, waiting, or error |
+| Presentation | `presence/presentation-cue/v0.1` | A finite, binding-scoped semantic gesture derived from activity |
 | Playback | `state`, `audio`, `voice-output` | Whether speech is playing, its measured audio features, and the session that owns it |
 | Input status | `voice-input` | Local microphone/STT/delivery status; not model activity |
 
@@ -34,10 +35,33 @@ must not merge these lanes into one state variable.
 | `waiting` | Waiting for user, host approval, or another external input | explicit adapter state | Dim steady blue halo | 12 s |
 | `error` | A bounded, non-sensitive failure condition | explicit adapter/runtime error | Short red pulse, then idle | 4 s |
 
-The TTL is a lease, not a guaranteed animation duration. Non-idle TTLs are
+The TTL is a lease, not an animation duration. Non-idle TTLs are
 clamped to `500..30000` ms at the bridge, and the renderer returns to `idle`
 when the lease expires. Adapters should refresh long-running work with the
 same state and a new sequence/timestamp. `idle` always has `ttl_ms: 0`.
+
+## Semantic presentation contract
+
+Activity telemetry and semantic gestures are intentionally separate. A
+non-idle activity can remain visible in the halo/status lane after its finite
+pose has returned to the persistent profile default. Effective configuration
+snapshots contain only persistent actions; they are never republished with the
+same revision merely to carry an activity overlay.
+
+The Python runtime deterministically resolves an activity into an internal
+`presence/presentation-cue/v0.1`. The cue names its binding, configuration
+revision, monotonic per-binding presentation sequence, source event, persistent
+base actions, resolved target actions, entry/exit easing, and minimum visible
+lifetime. The renderer validates that the cue base matches its acknowledged
+snapshot, eases from base to target and back to base, and acknowledges
+completion with the same binding, revision, and sequence.
+
+Each binding has one active cue and one latest-pending cue. The active cue is
+not interrupted before its minimum lifetime; newer pending states replace
+obsolete pending states. `idle` clears pending work but lets the active cue
+finish its bounded exit. A profile/avatar revision, dormant binding, removal,
+or shutdown cancels transient presentation state and restores the persistent
+base. Presentation cues are ephemeral and are not replayed after restart.
 
 ### Tool and MCP normalization
 
@@ -151,7 +175,9 @@ idle.
 - Accept the closed activity vocabulary and ignore unknown future event types.
 - Clamp numeric audio values and tolerate missing/extra bands.
 - Expire non-idle activity leases safely to `idle`.
-- Keep activity, playback, and input status in separate local state.
+- Keep activity, presentation, playback, and input status in separate local state.
+- Acknowledge presentation completion only after the persistent semantic base
+  has been reapplied.
 - Route scoped packets only to the exact matching session/profile window.
 - Never infer hidden reasoning or display provider-specific tool details.
 - Treat packets as samples and leases, not frame-by-frame animation commands.

@@ -1,4 +1,4 @@
-"""Install the project-local Codex AI Presence voice integration."""
+"""Compatibility installer for the user-level Presence Runtime v0.2."""
 
 from __future__ import annotations
 
@@ -412,13 +412,21 @@ def install_avatar_state_script(voice_root: Path) -> None:
 
 def install_profile_script(voice_root: Path) -> None:
     """Expose session/profile identity routing from the project runtime."""
-    for name in ("configuration.py", "profiles.py", "session_scope.py"):
+    for name in ("configuration.py", "profiles.py", "session_scope.py", "presence_compat.py"):
         shutil.copy2(SCRIPT_ROOT / name, voice_root / name)
 
 
 def install_voice_input_scripts(voice_root: Path) -> None:
     """Expose the local inbox, input control, STT, and delivery adapters."""
-    for name in ("inbox.py", "voice_input.py", "stt.py", "delivery.py", "clipboard.py", "presence_service.py"):
+    for name in (
+        "inbox.py",
+        "voice_input.py",
+        "stt.py",
+        "delivery.py",
+        "clipboard.py",
+        "presence_service.py",
+        "runtime_adapter.py",
+    ):
         shutil.copy2(SCRIPT_ROOT / name, voice_root / name)
 
 
@@ -541,6 +549,43 @@ def setup_openvino(voice_root: Path, base_python: list[str]) -> None:
     provider_check(python, "OpenVINO")
 
 
+def v2_setup(args: argparse.Namespace) -> int:
+    """Translate the legacy setup surface without creating project runtimes."""
+
+    print(
+        "warning: setup.py is a v0.1 compatibility wrapper; use `presence runtime install` "
+        "and `presence project register`",
+        file=sys.stderr,
+    )
+    command = [sys.executable, str(SCRIPT_ROOT / "presence.py"), "runtime", "install"]
+    if args.python is not None:
+        command.extend(["--python", str(args.python.expanduser().resolve())])
+    provider = None
+    if args.cuda:
+        provider = "cuda"
+    elif args.directml:
+        provider = "directml"
+    elif args.openvino:
+        provider = "openvino"
+    if provider is not None:
+        command.extend(["--provider", provider])
+    if args.with_input:
+        command.append("--with-input")
+    result = subprocess.run(command, text=True, check=False)
+    if result.returncode:
+        return result.returncode
+    project_root = args.project_root.expanduser().resolve()
+    if args.enable:
+        from presence_compat import _presence
+
+        return _presence(["project", "register", str(project_root)]).returncode
+    print(
+        f"Presence Runtime installed. Register this project when ready: "
+        f"presence project register {project_root}"
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
@@ -580,6 +625,8 @@ def main() -> int:
             "Kokoro fork requires ONNX Runtime's DmlExecutionProvider and has "
             "no Linux-compatible provider path"
         )
+
+    return v2_setup(args)
 
     project_root = args.project_root.expanduser().resolve()
     voice_root = project_root / ".codex-voice"

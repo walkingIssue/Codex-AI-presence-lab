@@ -285,7 +285,16 @@ class CodexPresenceLauncher:
             params = message.get("params")
             params = params if isinstance(params, dict) else {}
             session_id = params.get("threadId")
-            self.activity.send(state, source="codex-app-server", session_id=session_id if isinstance(session_id, str) else None)
+            selected_session = session_id if isinstance(session_id, str) else None
+            publish = getattr(self.activity, "publish_activity", None)
+            if callable(publish):
+                publish(state, selected_session)
+            else:
+                self.activity.send(
+                    state,
+                    source="codex-app-server",
+                    session_id=selected_session,
+                )
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         upstream_reader = upstream_writer = None
@@ -349,7 +358,9 @@ class CodexPresenceLauncher:
             self.arbiter_adapter = ArbiterInboxAdapter(self.project_root, self.voice_root)
             self.router = VoiceChunkRouter(self.arbiter_adapter, source="codex-app-server")
             self.router.start()
-            if marker_enabled(self.voice_root / "orb.enabled"):
+            if self.arbiter_adapter.runtime is not None:
+                self.activity = self.arbiter_adapter
+            elif marker_enabled(self.voice_root / "orb.enabled"):
                 self.activity = ActivityEmitter(voice_root=self.voice_root)
             self.server = await asyncio.start_server(self.handle_client, "127.0.0.1", 0)
             bridge_port = int(self.server.sockets[0].getsockname()[1]) if self.server.sockets else 0
@@ -368,13 +379,17 @@ class CodexPresenceLauncher:
             self.server.close()
             await self.server.wait_closed()
             self.server = None
+        if self.activity is not None:
+            publish = getattr(self.activity, "publish_activity", None)
+            if callable(publish):
+                publish("idle", None)
+            else:
+                self.activity.send("idle", source="codex-app-server")
+                self.activity.close()
+            self.activity = None
         if self.router is not None:
             self.router.close()
             self.router = None
-        if self.activity is not None:
-            self.activity.send("idle", source="codex-app-server")
-            self.activity.close()
-            self.activity = None
         for process in (self.client, self.upstream):
             if process is not None and process.poll() is None:
                 process.terminate()

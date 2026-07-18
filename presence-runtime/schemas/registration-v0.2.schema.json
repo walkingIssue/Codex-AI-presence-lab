@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walkingissue.local/presence/registration-v0.2.schema.json",
+  "title": "Presence Runtime v0.2 Source Registration",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "adapter", "project_root", "capabilities"],
+      "properties": {
+        "type": {"const": "register"},
+        "adapter": {"type": "string", "minLength": 1},
+        "project_root": {"type": "string", "minLength": 1},
+        "session_id": {"type": "string", "minLength": 1},
+        "capabilities": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      },
+      "not": {
+        "anyOf": [
+          {"required": ["orb_port"]},
+          {"required": ["profile_id"]},
+          {"required": ["avatar_id"]},
+          {"required": ["route_key"]},
+          {"required": ["binding_id"]}
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_id", "project_instance_id", "binding_id", "lease_token", "expires_at"],
+      "properties": {
+        "type": {"const": "registered"},
+        "source_id": {"type": "string", "format": "uuid"},
+        "project_instance_id": {"type": "string", "format": "uuid"},
+        "binding_id": {"type": "string", "format": "uuid"},
+        "lease_token": {"type": "string", "minLength": 32},
+        "expires_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  ]
+}

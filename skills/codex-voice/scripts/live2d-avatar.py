@@ -22,6 +22,11 @@ def _runtime_sources() -> list[Path]:
 
 
 def main() -> int:
+    from presence_compat import delegate
+
+    delegated = delegate("live2d-avatar", sys.argv[1:])
+    if delegated is not None:
+        return delegated
     for runtime_source in _runtime_sources():
         runtime_source = runtime_source.resolve()
         if (runtime_source / "live2d_avatar").is_dir():

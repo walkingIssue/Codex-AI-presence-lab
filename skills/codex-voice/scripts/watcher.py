@@ -23,6 +23,7 @@ from delivery import AppServerClient, DeliveryError, resolve_session_label
 from global_arbiter import GlobalPlaybackArbiter
 from inbox import Inbox, database_path, stable_event_id, stable_visible_final_event_id
 from presence_service import PresenceService
+from runtime_adapter import RuntimePlaybackAdapter
 from session_scope import (
     is_project_mode,
     load_state,
@@ -1488,7 +1489,16 @@ def main() -> int:
         log(voice_root, "cleared stale TTS progress cursor after restart")
     # Playback is globally owned.  This watcher only adapts rollout records
     # and registers its project/session route with the user-level arbiter.
-    arbiter = GlobalPlaybackArbiter(project_root, voice_root, inbox)
+    arbiter = (
+        RuntimePlaybackAdapter(project_root)
+        if RuntimePlaybackAdapter.available()
+        else GlobalPlaybackArbiter(project_root, voice_root, inbox)
+    )
+    log(
+        voice_root,
+        "playback owner: "
+        + ("presence-runtime/v0.2" if isinstance(arbiter, RuntimePlaybackAdapter) else "legacy/v0.1"),
+    )
     presence = PresenceService(project_root, voice_root, inbox, arbiter)
     input_controller = VoiceInputController(project_root, voice_root, inbox, arbiter)
     activity_tracker = ActivityTracker(presence)

@@ -25,8 +25,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate and package
+  validate-windows:
+    name: Windows contract and package
     runs-on: windows-latest
     steps:
       - name: Check out source under test
@@ -46,14 +46,62 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install contract test dependencies
+        shell: pwsh
+        run: python -m pip install pytest
+
+      - name: Run source contract suites
+        shell: pwsh
+        working-directory: source
+        run: |
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          if (Test-Path presence-runtime/tests) {
+            $env:PYTHONPATH = (Resolve-Path presence-runtime/src).Path
+            python -m pytest -q -p no:cacheprovider presence-runtime/tests
+            python tools/runtime_manifest.py --check
+          }
+          python -m pytest -q -p no:cacheprovider skills/codex-voice/tests
+          if (Test-Path live2d-avatar-runtime/tests) {
+            $env:PYTHONPATH = (Resolve-Path live2d-avatar-runtime/src).Path
+            python -m pytest -q -p no:cacheprovider live2d-avatar-runtime/tests
+          }
+          npm --prefix presence-runtime/renderer-host test -- --runInBand
 
       - name: Project the installable skill
         shell: pwsh
         working-directory: lab
         run: |
-          python tools/project_release.py --source ../source --output dist
-          python tools/e2e_check.py --source dist
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          $toolRoot = if (Test-Path ../source/tools/project_release.py) {
+            Resolve-Path ../source/tools
+          } else {
+            Resolve-Path tools
+          }
+          python "$toolRoot/project_release.py" --source ../source --output dist
+          python "$toolRoot/e2e_check.py" --source dist
+
+      - name: Run projected contract suites
+        shell: pwsh
+        working-directory: lab
+        run: |
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          python -m pytest -q -p no:cacheprovider dist/skills/codex-voice/tests
+          if (Test-Path ../source/presence-runtime/tests) {
+            $env:PYTHONPATH = (Resolve-Path dist/skills/codex-voice/presence-runtime/src).Path
+            python -m pytest -q -p no:cacheprovider ../source/presence-runtime/tests
+          }
+          if (Test-Path ../source/live2d-avatar-runtime/tests) {
+            $env:PYTHONPATH = (Resolve-Path dist/skills/codex-voice/live2d-avatar-runtime/src).Path
+            python -m pytest -q -p no:cacheprovider ../source/live2d-avatar-runtime/tests
+          }
+          npm --prefix dist/skills/codex-voice/presence-runtime/renderer-host test -- --runInBand
 
       - name: Create installable artifact
         shell: pwsh
@@ -67,4 +115,3 @@ jobs:
           name: codex-ai-presence-skill
           path: lab/codex-ai-presence-skill.zip
           if-no-files-found: error
-

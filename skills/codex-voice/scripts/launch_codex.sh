@@ -2,36 +2,21 @@
 
 set -euo pipefail
 
-script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_root="${CODEX_PRESENCE_PROJECT_ROOT:-$PWD}"
 project_root="$(cd -- "$project_root" && pwd)"
-voice_root="${CODEX_PRESENCE_VOICE_ROOT:-$project_root/.codex-voice}"
-if [[ ! -d "$voice_root" ]]; then
-    printf 'Project-local voice runtime is missing: %s\n' "$voice_root" >&2
-    exit 1
-fi
-voice_root="$(cd -- "$voice_root" && pwd)"
-launcher="$script_root/launch_codex.py"
-if [[ -f "$voice_root/launch_codex.py" ]]; then
-    launcher="$voice_root/launch_codex.py"
-fi
-python="$voice_root/.venv/bin/python"
-provider=""
-if [[ -f "$voice_root/provider" ]]; then
-    provider="$(<"$voice_root/provider")"
-fi
-if [[ "$provider" == "openvino" && -x "$voice_root/.openvino-venv/bin/python" ]]; then
-    python="$voice_root/.openvino-venv/bin/python"
-fi
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+python="$codex_home/presence/.venv/bin/python"
+launcher="$codex_home/presence/adapters/codex/launch_codex.py"
+voice_root="$project_root/.codex-voice/v0.2"
 
 if [[ ! -x "$python" ]]; then
-    printf 'Codex voice runtime is missing: %s\n' "$python" >&2
+    printf 'Presence Runtime Python is missing: %s\n' "$python" >&2
     exit 1
 fi
 if [[ ! -f "$launcher" ]]; then
-    printf 'Codex presence launcher is missing: %s\n' "$launcher" >&2
+    printf 'Managed Codex TUI adapter is missing: %s\n' "$launcher" >&2
     exit 1
 fi
-
+mkdir -p -- "$voice_root"
 cd -- "$project_root"
 exec "$python" "$launcher" --project-root "$project_root" --voice-root "$voice_root" "$@"

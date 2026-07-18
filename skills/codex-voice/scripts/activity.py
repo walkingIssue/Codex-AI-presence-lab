@@ -202,6 +202,25 @@ def main() -> int:
         print(f"No project-local voice directory was found: {voice_root}")
         return 2
 
+    try:
+        from runtime_adapter import RuntimePlaybackAdapter
+    except ImportError:
+        RuntimePlaybackAdapter = None
+    if RuntimePlaybackAdapter is not None and RuntimePlaybackAdapter.available():
+        adapter = RuntimePlaybackAdapter(args.project_root.resolve(), adapter=args.source)
+        try:
+            sent = adapter.publish_activity(
+                args.state,
+                session_id=args.session_id,
+                event_id=(
+                    f"activity:{args.source}:{args.session_id or 'project'}:"
+                    f"{__import__('time').time_ns()}:{args.state}"
+                ),
+            )
+        finally:
+            adapter.close()
+        return 0 if sent else 1
+
     emitter = ActivityEmitter(voice_root=voice_root)
     try:
         sent = emitter.send(
