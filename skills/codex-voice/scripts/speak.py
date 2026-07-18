@@ -67,6 +67,7 @@ MAX_PACING_CATCHUP_SECONDS = 0.1
 _TTS_CACHE = None
 _FFPLAY_CACHE: str | None = None
 _FFPLAY_RESOLVED = False
+_LAST_REQUEST_ERROR: str | None = None
 
 
 class PlaybackInterrupted(RuntimeError):
@@ -1122,6 +1123,8 @@ def handle_payload(payload: dict, *, emit_finish: bool = True) -> int:
 
 
 def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
+    global _LAST_REQUEST_ERROR
+    _LAST_REQUEST_ERROR = None
     def done() -> int:
         return finish(emit=emit_finish)
 
@@ -1200,8 +1203,11 @@ def _handle_payload(payload: dict, *, emit_finish: bool) -> int:
         hook_log("interrupted by voice input")
         return finish(emit=emit_finish) if emit_finish else 3
     except Exception as exc:  # Never make a Codex turn fail because TTS failed.
-        hook_log(f"error: {type(exc).__name__}: {exc}")
+        _LAST_REQUEST_ERROR = f"{type(exc).__name__}: {exc}"
+        hook_log(f"error: {_LAST_REQUEST_ERROR}")
         print(f"Codex TTS skipped: {exc}", file=sys.stderr)
+        if not emit_finish:
+            return 1
     finally:
         if audio_path is not None:
             try:
@@ -1215,12 +1221,14 @@ def server_main() -> int:
     """Keep one preloaded Kokoro process alive for the desktop watcher."""
     hook_log("persistent TTS worker starting")
     preload_ok = True
+    preload_error = None
     try:
         get_tts()
     except Exception as exc:
         preload_ok = False
+        preload_error = f"{type(exc).__name__}: {exc}"
         hook_log(f"persistent TTS preload failed: {type(exc).__name__}: {exc}")
-    print(json.dumps({"ready": preload_ok}), flush=True)
+    print(json.dumps({"ready": preload_ok, "error": preload_error}), flush=True)
 
     for line in sys.stdin:
         if not line.strip():
@@ -1230,16 +1238,14 @@ def server_main() -> int:
             if not isinstance(payload, dict):
                 raise ValueError("request must be a JSON object")
             result = handle_payload(payload, emit_finish=False)
-            print(
-                json.dumps(
-                    {
-                        "done": True,
-                        "ok": result == 0,
-                        "interrupted": result == 3,
-                    }
-                ),
-                flush=True,
-            )
+            response = {
+                "done": True,
+                "ok": result == 0,
+                "interrupted": result == 3,
+            }
+            if result not in {0, 3}:
+                response["error"] = _LAST_REQUEST_ERROR or "TTS request failed"
+            print(json.dumps(response), flush=True)
         except Exception as exc:
             hook_log(f"persistent TTS worker request failed: {type(exc).__name__}: {exc}")
             print(json.dumps({"done": True, "ok": False}), flush=True)

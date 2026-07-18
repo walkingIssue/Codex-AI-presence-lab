@@ -263,7 +263,10 @@ class RuntimePlaybackAdapter:
         return client
 
     def start(self) -> None:
-        self._client(None).start()
+        # Do not create a project binding merely to prove connectivity.  A
+        # project-scoped source receives its dedicated binding only when it
+        # actually emits an unscoped event; otherwise the lease would create a
+        # duplicate visible window beside every active session.
         if self.input_thread is None or not self.input_thread.is_alive():
             self.input_stop.clear()
             self.input_thread = threading.Thread(

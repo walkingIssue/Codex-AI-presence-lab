@@ -38,6 +38,7 @@ class KokoroWorkerSupervisor:
         self.dml_model_path = dml_model_path
         self.process: subprocess.Popen[str] | None = None
         self.ready = False
+        self.last_error: str | None = None
         self._lock = threading.RLock()
 
     def start(self) -> bool:
@@ -73,8 +74,12 @@ class KokoroWorkerSupervisor:
                 line = self.process.stdout.readline() if self.process.stdout else ""
                 response = json.loads(line) if line else {}
                 self.ready = bool(response.get("ready"))
-            except (OSError, json.JSONDecodeError):
+                self.last_error = (
+                    None if self.ready else str(response.get("error") or "Kokoro preload failed")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
                 self.ready = False
+                self.last_error = f"{type(exc).__name__}: {exc}"
             if not self.ready:
                 self.stop()
             return self.ready
@@ -93,6 +98,7 @@ class KokoroWorkerSupervisor:
                 or self.process.stdin is None
                 or self.process.stdout is None
             ):
+                self.last_error = "Kokoro worker is unavailable"
                 return "failed"
             tts = item["tts"]
             request = {
@@ -114,13 +120,17 @@ class KokoroWorkerSupervisor:
                 )
                 self.process.stdin.flush()
                 response = json.loads(self.process.stdout.readline() or "{}")
-            except (BrokenPipeError, OSError, json.JSONDecodeError):
+            except (BrokenPipeError, OSError, json.JSONDecodeError) as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
                 self.stop()
                 return "failed"
             if response.get("done") and response.get("ok"):
+                self.last_error = None
                 return "completed"
             if response.get("done") and response.get("interrupted"):
+                self.last_error = None
                 return "interrupted"
+            self.last_error = str(response.get("error") or "Kokoro request failed")
             return "failed"
 
     def stop_playback(self) -> None:
@@ -147,6 +157,7 @@ class KokoroWorkerSupervisor:
             "pid": process.pid if running else None,
             "runtime_root": str(self.runtime_root),
             "provider": self.provider,
+            "last_error": self.last_error,
         }
 
     def stop(self) -> None:

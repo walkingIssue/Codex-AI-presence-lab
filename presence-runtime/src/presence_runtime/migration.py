@@ -196,10 +196,19 @@ class LegacyMigrator:
         marker = directory / f"{project_id}.lock"
         descriptor: int | None = None
         try:
-            try:
-                descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            except FileExistsError as exc:
-                raise ConflictError(f"Migration lock already exists: {marker}") from exc
+            for attempt in range(2):
+                try:
+                    descriptor = os.open(
+                        marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                    )
+                    break
+                except FileExistsError as exc:
+                    if attempt or not self._remove_stale_lock(marker):
+                        raise ConflictError(
+                            f"Migration lock already exists: {marker}"
+                        ) from exc
+            if descriptor is None:
+                raise ConflictError(f"Could not acquire migration lock: {marker}")
             os.write(descriptor, str(os.getpid()).encode("ascii"))
             yield
         finally:
@@ -207,6 +216,24 @@ class LegacyMigrator:
                 os.close(descriptor)
                 marker.unlink(missing_ok=True)
             thread_lock.release()
+
+    @staticmethod
+    def _remove_stale_lock(marker: Path) -> bool:
+        try:
+            owner = int(marker.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            return False
+        # Import locally to keep migration's pure document helpers independent
+        # of service lifecycle initialization.
+        from .lifecycle import _pid_running
+
+        if _pid_running(owner):
+            return False
+        try:
+            marker.unlink()
+        except OSError:
+            return False
+        return True
 
     def status(self, project_id: str) -> dict[str, Any]:
         return self.store.migration_record(project_id) or {
@@ -223,16 +250,13 @@ class LegacyMigrator:
         if existing and existing["status"] == "committed":
             return {**existing, "idempotent": True}
         if existing and existing["status"] == "pending":
-            checkpoint = existing.get("details", {}).get("checkpoint")
-            if isinstance(checkpoint, dict):
-                self.store.rollback_legacy_configuration(
-                    project_id=project_id, checkpoint=checkpoint
-                )
-            self.store.set_migration_record(
-                project_id=project_id,
-                source_hash=existing["source_hash"],
-                status="failed",
-                details={**existing.get("details", {}), "diagnostic": "recovered pending migration"},
+            self._recover_pending(project_id, existing)
+            raise ConflictError(
+                "Recovered an interrupted migration; run `presence migrate retry` explicitly"
+            )
+        if existing and existing["status"] in {"failed", "rolled_back"}:
+            raise ConflictError(
+                "Migration is not committed; inspect it and run `presence migrate retry` explicitly"
             )
         return self._migrate(project_id, project_root)
 
@@ -240,7 +264,33 @@ class LegacyMigrator:
         existing = self.store.migration_record(project_id)
         if existing and existing["status"] == "committed":
             raise ConflictError("Migration is already committed; roll it back before retrying")
+        if existing and existing["status"] == "pending":
+            self._recover_pending(project_id, existing)
+        elif existing and existing["status"] in {"failed", "rolled_back"}:
+            checkpoint = existing.get("details", {}).get("checkpoint")
+            if isinstance(checkpoint, dict):
+                # Idempotently restore once more so retry can repair state
+                # left by an older or interrupted rollback implementation.
+                self.store.rollback_legacy_configuration(
+                    project_id=project_id, checkpoint=checkpoint
+                )
         return self._migrate(project_id, project_root)
+
+    def _recover_pending(self, project_id: str, record: Mapping[str, Any]) -> None:
+        checkpoint = record.get("details", {}).get("checkpoint")
+        if isinstance(checkpoint, dict):
+            self.store.rollback_legacy_configuration(
+                project_id=project_id, checkpoint=checkpoint
+            )
+        self.store.set_migration_record(
+            project_id=project_id,
+            source_hash=str(record["source_hash"]),
+            status="failed",
+            details={
+                **record.get("details", {}),
+                "diagnostic": "recovered pending migration",
+            },
+        )
 
     def rollback(self, project_id: str) -> dict[str, Any]:
         record = self.store.migration_record(project_id)

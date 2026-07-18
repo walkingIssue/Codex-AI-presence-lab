@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -15,6 +16,52 @@ def _template_root() -> Path:
     if not (root / "index.html").is_file():
         raise AvatarRuntimeError(f"renderer template is incomplete: {root}")
     return root
+
+
+def renderer_template_fingerprint() -> str:
+    """Fingerprint derived renderer code independently of user model assets."""
+
+    root = _template_root()
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def catalog_bundle_is_current(
+    destination: Path,
+    model_pack: Mapping[str, Any],
+) -> bool:
+    """Return whether derived renderer files match this runtime template."""
+
+    target = destination.expanduser().resolve()
+    required = ("index.html", "renderer.js", "styles.css", "avatar-capabilities.js")
+    if any(not (target / name).is_file() for name in required):
+        return False
+    try:
+        metadata = json.loads(
+            (target / "catalog-renderer.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+    if metadata != {
+        "schema": "presence/catalog-renderer/v0.2",
+        "avatar_ref": f"{model_pack['avatar_id']}@{model_pack['version']}",
+        "model_fingerprint": model_pack["model_fingerprint"],
+        "renderer_template_fingerprint": renderer_template_fingerprint(),
+    }:
+        return False
+    template = _template_root()
+    for source in (item for item in template.rglob("*") if item.is_file()):
+        projected = target / source.relative_to(template)
+        if not projected.is_file() or projected.read_bytes() != source.read_bytes():
+            return False
+    return True
 
 
 def _capability_document(model_pack: Mapping[str, Any]) -> dict[str, Any]:
@@ -92,6 +139,7 @@ def materialize_catalog_bundle(
                 "schema": "presence/catalog-renderer/v0.2",
                 "avatar_ref": f"{model_pack['avatar_id']}@{model_pack['version']}",
                 "model_fingerprint": model_pack["model_fingerprint"],
+                "renderer_template_fingerprint": renderer_template_fingerprint(),
             },
             indent=2,
             sort_keys=True,

@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -306,6 +308,7 @@ class ElectronRendererSupervisor:
                 self._responses.pop(request_id, None)
         if not response.get("ok"):
             raise RuntimeError(str(response.get("error") or "renderer command failed"))
+        self._last_error = None
         result = response.get("result")
         return result if isinstance(result, dict) else {}
 
@@ -326,17 +329,19 @@ class ElectronRendererSupervisor:
     def apply_snapshot(self, snapshot: EffectiveSnapshot) -> bool:
         try:
             binding = self.store.binding(snapshot.binding_id)
+            resource = self._resource(snapshot)
             result = self._request(
                 {
                     "type": "snapshot",
                     "snapshot": PresenceResolver.renderer_document(snapshot),
-                    "resource": self._resource(snapshot),
+                    "resource": resource,
                     "geometry": self.store.geometry(snapshot.binding_id),
                     "active": binding["state"] == "active",
                     # Eligibility is per binding; the separate machine policy
                     # gates it dynamically without requiring a snapshot swap.
                     "input_allowed": binding["scope"] == "session",
-                }
+                },
+                timeout=75.0 if resource["kind"] == "live2d" else 20.0,
             )
         except Exception as exc:
             self._last_error = str(exc)
@@ -453,14 +458,7 @@ class ElectronRendererSupervisor:
                 writer.flush()
                 process.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
-                try:
-                    process.terminate()
-                    process.wait(timeout=2)
-                except (OSError, subprocess.TimeoutExpired):
-                    try:
-                        process.kill()
-                    except OSError:
-                        pass
+                self._force_stop_process(process)
         for stream in (
             control_reader,
             control_writer,
@@ -480,3 +478,54 @@ class ElectronRendererSupervisor:
         for thread in (reader, stdout_reader, stderr_reader):
             if thread is not None and thread is not current:
                 thread.join(timeout=2)
+        if process is not None and process.poll() is not None:
+            self._cleanup_process_data(process.pid)
+
+    @staticmethod
+    def _cleanup_process_data(pid: int) -> None:
+        """Remove only the terminated renderer's private Chromium data directory."""
+
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        target = (temp_root / f"codex-presence-renderer-host-{pid}").resolve()
+        if target.parent != temp_root or not target.name.startswith(
+            "codex-presence-renderer-host-"
+        ):
+            return
+        try:
+            shutil.rmtree(target)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # Windows can hold Chromium files briefly after process exit. A
+            # stale directory is harmless because every root gets a unique PID.
+            pass
+
+    @staticmethod
+    def _force_stop_process(process: subprocess.Popen[str]) -> None:
+        """Terminate the managed renderer tree after graceful shutdown expires."""
+
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass

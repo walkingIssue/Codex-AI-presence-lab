@@ -105,13 +105,20 @@ class PresenceResolver:
             project,
             session,
         )
+        preset_source = self._highest_source_with(
+            "preset_ref",
+            normalized_profile,
+            project,
+            session,
+        )
+        preset_semantic: Mapping[str, Any] | None = None
         if normalized_preset is not None:
             resolved_preset_ref = self._match_preset(
                 selected_preset_ref,
                 normalized_preset,
                 avatar["model_fingerprint"],
             )
-            semantic_layers.append(("preset", normalized_preset["semantic"]))
+            preset_semantic = normalized_preset["semantic"]
         elif selected_preset_ref is not None:
             raise ValidationError(
                 f"preset {selected_preset_ref!r} was selected but not loaded",
@@ -120,12 +127,20 @@ class PresenceResolver:
         else:
             resolved_preset_ref = None
 
+        if preset_semantic is not None and preset_source == "runtime:builtins":
+            semantic_layers.append(("runtime:preset", preset_semantic))
         if normalized_profile is not None:
             self._merge_config(values, provenance, normalized_profile, "profile")
+            if preset_semantic is not None and preset_source == "profile":
+                semantic_layers.append(("profile:preset", preset_semantic))
             semantic_layers.append(("profile", normalized_profile.get("semantic")))
         self._merge_config(values, provenance, project, "project")
+        if preset_semantic is not None and preset_source == "project":
+            semantic_layers.append(("project:preset", preset_semantic))
         semantic_layers.append(("project", project.get("semantic")))
         self._merge_config(values, provenance, session, "session")
+        if preset_semantic is not None and preset_source == "session":
+            semantic_layers.append(("session:preset", preset_semantic))
         semantic_layers.append(("session", session.get("semantic")))
 
         values["preset_ref"] = resolved_preset_ref

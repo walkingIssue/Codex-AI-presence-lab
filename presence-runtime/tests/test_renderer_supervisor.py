@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+from unittest.mock import Mock
 
 from presence_runtime.catalog import Catalog
 from presence_runtime.renderer import ElectronRendererSupervisor
@@ -104,3 +106,34 @@ for line in sys.stdin:
     assert renderer.remove_binding(binding["binding_id"]) is True
     renderer.close()
     assert renderer.status()["running"] is False
+
+
+def test_windows_force_stop_targets_only_the_managed_renderer_tree(monkeypatch) -> None:
+    process = Mock()
+    process.pid = 4242
+    process.poll.side_effect = [None, 1]
+    invoked = []
+    monkeypatch.setattr("presence_runtime.renderer.os.name", "nt")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: invoked.append(command),
+    )
+
+    ElectronRendererSupervisor._force_stop_process(process)
+
+    assert invoked == [["taskkill", "/PID", "4242", "/T", "/F"]]
+
+
+def test_renderer_cleanup_removes_only_its_pid_scoped_data(tmp_path, monkeypatch) -> None:
+    own = tmp_path / "codex-presence-renderer-host-4242"
+    sibling = tmp_path / "codex-presence-renderer-host-4343"
+    own.mkdir()
+    sibling.mkdir()
+    (own / "lockfile").write_text("released", encoding="utf-8")
+    monkeypatch.setattr("presence_runtime.renderer.tempfile.gettempdir", lambda: str(tmp_path))
+
+    ElectronRendererSupervisor._cleanup_process_data(4242)
+
+    assert not own.exists()
+    assert sibling.is_dir()

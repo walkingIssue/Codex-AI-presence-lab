@@ -77,6 +77,43 @@ def test_empty_slot_lists_clear_only_the_selected_parent_slots(
     assert snapshot.semantic.persistent_actions == ("wardrobe.sweater",)
 
 
+def test_session_selected_preset_has_child_precedence_over_profile_semantics(
+    higan_pack: dict,
+    higan_profile: dict,
+) -> None:
+    profile = {
+        **higan_profile,
+        "preset_ref": None,
+        "semantic": {"slots": {"body.pose": ["pose.sweater-default"]}},
+    }
+    child_preset = {
+        "schema": "presence/preset/v0.2",
+        "preset_id": "session-pipe",
+        "revision": 1,
+        "compatible_model_fingerprints": [higan_pack["model_fingerprint"]],
+        "semantic": {
+            "slots": {"body.pose": ["pose.pipe"]},
+            "clear_slots": ["accessory.shoulders", "body.legs"],
+        },
+    }
+    snapshot = PresenceResolver().resolve(
+        binding_id=binding_id(),
+        revision=1,
+        model_pack=higan_pack,
+        profile=profile,
+        profile_ref="higan-default",
+        preset=child_preset,
+        project_patch={"profile_ref": "higan-default"},
+        session_patch={"preset_ref": "session-pipe"},
+    )
+
+    assert snapshot.semantic.persistent_actions == (
+        "wardrobe.sweater",
+        "pose.pipe",
+    )
+    assert snapshot.provenance["semantic.slots.body.pose"] == "session:preset"
+
+
 def test_project_changes_flow_to_inheriting_children_but_not_explicit_overrides(
     higan_pack: dict,
     higan_profile: dict,
@@ -252,4 +289,3 @@ def test_renderer_payload_is_resolved_and_contains_no_raw_controls(
     assert "provenance" not in payload
     assert payload["binding_id"] == snapshot.binding_id
     assert payload["semantic"]["effective_actions"][-1] == "gesture.hand-mouth"
-

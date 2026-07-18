@@ -639,9 +639,11 @@ class RuntimeController:
         result = "failed"
         diagnostic: str | None = None
         attention_started = False
+        stage = "begin-playback"
         try:
             self.store.begin_playback(item["binding_id"], item["utterance_id"])
             attention_started = True
+            stage = "notify-renderer"
             self.renderer.playback_event(
                 {
                     "type": "voice-output",
@@ -650,13 +652,19 @@ class RuntimeController:
                     "utterance_id": item["utterance_id"],
                 }
             )
+            stage = "mark-playing"
             self.store.update_speech_status(item["queue_id"], "playing")
+            stage = "voice-inference"
             result = self.voice.speak(item)
+            if result == "failed":
+                worker_error = self.voice.status().get("last_error")
+                if worker_error:
+                    diagnostic = f"worker: {worker_error}"
         except Exception as exc:
             # A worker or renderer transport failure must not strand a durable
             # item in claimed/playing forever.  The playback loop remains live
             # and doctor exposes the terminal diagnostic.
-            diagnostic = f"{type(exc).__name__}: {exc}"
+            diagnostic = f"{stage}: {type(exc).__name__}: {exc}"
         finally:
             if attention_started:
                 self.store.finish_playback(item["binding_id"], item["utterance_id"])

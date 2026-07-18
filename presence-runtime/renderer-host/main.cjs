@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const dgram = require("dgram");
 const fs = require("fs");
 const crypto = require("crypto");
+const os = require("os");
 const path = require("path");
 const readline = require("readline");
 const net = require("net");
@@ -25,11 +26,36 @@ const inputRoot = path.resolve(process.env.CODEX_PRESENCE_INPUT_ROOT || "");
 const captures = new Map();
 const interactions = new Map();
 const MAX_RECORDING_BYTES = 25 * 1024 * 1024;
+const rendererUserData = path.join(
+  os.tmpdir(),
+  `codex-presence-renderer-host-${process.pid}`,
+);
+try {
+  fs.rmSync(rendererUserData, { recursive: true, force: true });
+  fs.mkdirSync(rendererUserData, { recursive: true });
+  app.setPath("userData", rendererUserData);
+} catch (error) {
+  console.error(`renderer user-data initialization failed: ${error?.message || error}`);
+}
 
 function emit(document) {
   const line = JSON.stringify(document) + "\n";
-  if (controlSocket?.writable) controlSocket.write(line);
+  if (controlSocket?.writable && !controlSocket.destroyed) {
+    controlSocket.write(line, (error) => {
+      if (error && !quitting) quietControlDisconnect();
+    });
+  }
   else process.stdout.write(line);
+}
+
+function quietControlDisconnect() {
+  if (quitting) return;
+  quitting = true;
+  registry.closeAll();
+  if (udp) {
+    try { udp.close(); } catch (_) {}
+  }
+  setImmediate(() => app.quit());
 }
 
 function waiterKey(webContentsId, kind, revision = "") {
@@ -300,8 +326,50 @@ async function createReplacement(command, previous) {
     },
   };
   const webContentsId = window.webContents.id;
+  const diagnostics = [];
+  const rememberDiagnostic = (value) => {
+    const message = String(value || "").trim();
+    if (!message) return;
+    diagnostics.push(message.slice(-2048));
+    if (diagnostics.length > 8) diagnostics.shift();
+  };
+  window.webContents.on("console-message", (details) => {
+    const level = details?.level;
+    const message = details?.message;
+    rememberDiagnostic(`console ${level || "unknown"}: ${message}`);
+  });
+  window.webContents.on("did-finish-load", () => {
+    rememberDiagnostic("document finished loading");
+  });
+  window.webContents.on("preload-error", (_event, preloadPath, error) => {
+    const message = `preload failed ${preloadPath}: ${error?.message || error}`;
+    rememberDiagnostic(message);
+    resolveWaiter(webContentsId, "ready", "", null, message);
+  });
+  window.webContents.on(
+    "did-fail-load",
+    (_event, code, description, validatedURL, isMainFrame) => {
+      if (isMainFrame === false) return;
+      const message = `load failed ${code}: ${description} (${validatedURL})`;
+      rememberDiagnostic(message);
+      resolveWaiter(webContentsId, "ready", "", null, message);
+    },
+  );
+  window.webContents.on("render-process-gone", (_event, details) => {
+    const message = `renderer process exited: ${details?.reason || "unknown"}`;
+    rememberDiagnostic(message);
+    resolveWaiter(webContentsId, "ready", "", null, message);
+  });
+  window.on("unresponsive", () => {
+    rememberDiagnostic("renderer window became unresponsive");
+  });
   try {
-    const ready = waitFor(webContentsId, "ready");
+    const ready = waitFor(
+      webContentsId,
+      "ready",
+      "",
+      snapshot.renderer.kind === "live2d" ? 60000 : 15000,
+    );
     if (snapshot.renderer.kind === "builtin") {
       await window.loadFile(path.join(__dirname, "window", "index.html"));
     } else {
@@ -332,7 +400,59 @@ async function createReplacement(command, previous) {
     });
     return record;
   } catch (error) {
+    if (!window.isDestroyed()) {
+      try {
+        const probe = await window.webContents.executeJavaScript(`(async () => {
+          const capabilities = window.__LIVE2D_AVATAR_CAPABILITIES__;
+          const modelPath = typeof capabilities?.model?.path === "string"
+            ? capabilities.model.path
+            : null;
+          let modelProbe = null;
+          if (modelPath) {
+            const target = new URL(modelPath, location.href);
+            try {
+              modelProbe = await Promise.race([
+                fetch(target.href).then(async (response) => ({
+                  ok: response.ok,
+                  status: response.status,
+                  bytes: (await response.arrayBuffer()).byteLength,
+                  name: target.pathname.split("/").pop(),
+                })),
+                new Promise((resolve) => setTimeout(
+                  () => resolve({ ok: false, error: "probe timed out" }),
+                  5000,
+                )),
+              ]);
+            } catch (error) {
+              modelProbe = { ok: false, error: String(error?.message || error) };
+            }
+          }
+          return {
+            document_state: document.readyState,
+            presence_bridge: typeof window.presenceRenderer,
+            pixi: Boolean(window.PIXI),
+            live2d_factory: typeof window.PIXI?.live2d?.Live2DModel?.from,
+            capabilities: Boolean(capabilities),
+            live2d: window.__PRESENCE_LIVE2D_DIAGNOSTICS__ || null,
+            model_probe: modelProbe,
+            resources: performance.getEntriesByType("resource").slice(-12).map((entry) => ({
+              name: entry.name.split("/").pop(),
+              initiator: entry.initiatorType,
+              duration: Math.round(entry.duration),
+              bytes: entry.transferSize,
+            })),
+          };
+        })()`);
+        rememberDiagnostic(`probe ${JSON.stringify(probe)}`);
+      } catch (probeError) {
+        rememberDiagnostic(`probe failed: ${probeError?.message || probeError}`);
+      }
+    }
     record.destroy();
+    const diagnostic = diagnostics.slice(-4).join(" | ");
+    if (diagnostic && !String(error?.message || error).includes(diagnostic)) {
+      throw new Error(`${error?.message || error}; ${diagnostic}`);
+    }
     throw error;
   }
 }
@@ -418,10 +538,7 @@ async function handle(command) {
     return { root_pid: process.pid, udp_port: udpPort, windows: records };
   }
   if (command.type === "shutdown") {
-    quitting = true;
-    registry.closeAll();
-    if (udp) udp.close();
-    setImmediate(() => app.quit());
+    quietControlDisconnect();
     return { shutting_down: true };
   }
   throw new Error("unsupported renderer command: " + command.type);
@@ -470,15 +587,14 @@ function bindCommands(input) {
     }
   });
   lines.on("close", () => {
-    if (!quitting) {
-      registry.closeAll();
-      if (udp) udp.close();
-      app.quit();
-    }
+    quietControlDisconnect();
   });
 }
 
 app.on("window-all-closed", () => {});
+app.on("quit", () => {
+  try { fs.rmSync(rendererUserData, { recursive: true, force: true }); } catch (_) {}
+});
 
 app.whenReady().then(() => {
   const controlPort = Number(process.env.CODEX_PRESENCE_CONTROL_PORT || 0);
@@ -493,10 +609,11 @@ app.whenReady().then(() => {
         startUdp();
       },
     );
-    controlSocket.once("error", (error) => {
-      console.error(`renderer control connection failed: ${error?.message || error}`);
-      app.quit();
-    });
+    // Reset/pipe errors are expected when the Python supervisor stops or
+    // restarts. Keep a persistent handler so a second ECONNRESET can never
+    // surface as Electron's uncaught-JavaScript dialog.
+    controlSocket.on("error", () => quietControlDisconnect());
+    controlSocket.on("close", () => quietControlDisconnect());
     return;
   }
   bindCommands(process.stdin);

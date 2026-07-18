@@ -99,6 +99,7 @@ class Catalog:
                     raise ConflictError(
                         f"Avatar fingerprint {fingerprint} already has different metadata"
                     )
+                self._refresh_catalog_renderer(target, pack)
                 return f"{pack['avatar_id']}@{pack['version']}"
 
             # Keep the staging name short: pytest/user temp roots can already
@@ -132,6 +133,47 @@ class Catalog:
                 if temporary.exists():
                     shutil.rmtree(temporary)
         return f"{pack['avatar_id']}@{pack['version']}"
+
+    @staticmethod
+    def _refresh_catalog_renderer(target: Path, pack: Mapping[str, Any]) -> None:
+        """Transactionally refresh runtime-derived code around immutable assets."""
+
+        if pack["renderer"]["kind"] != "live2d":
+            return
+        assets = target / "assets"
+        if not assets.is_dir():
+            return
+        try:
+            from live2d_avatar.catalog_bundle import (
+                catalog_bundle_is_current,
+                materialize_catalog_bundle,
+            )
+        except ImportError as exc:
+            raise ConflictError(
+                "Canonical Live2D runtime is unavailable; cannot refresh a catalog renderer"
+            ) from exc
+        renderer = target / "renderer"
+        if catalog_bundle_is_current(renderer, pack):
+            return
+        temporary = target.parent / f".renderer-new-{uuid.uuid4().hex[:8]}"
+        backup = target.parent / f".renderer-old-{uuid.uuid4().hex[:8]}"
+        try:
+            materialize_catalog_bundle(pack, assets, temporary)
+            if renderer.exists():
+                os.replace(renderer, backup)
+            try:
+                os.replace(temporary, renderer)
+            except BaseException:
+                if backup.exists() and not renderer.exists():
+                    os.replace(backup, renderer)
+                raise
+            if backup.exists():
+                shutil.rmtree(backup)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+            if backup.exists() and renderer.exists():
+                shutil.rmtree(backup)
 
     def list_avatars(self) -> list[dict[str, Any]]:
         root = self.root / "avatars"

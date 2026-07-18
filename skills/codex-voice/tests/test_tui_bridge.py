@@ -157,7 +157,10 @@ class TuiBridgeTests(unittest.TestCase):
             voice.mkdir(parents=True)
             (voice / "enabled").write_text("on\n", encoding="utf-8")
             (voice / "volume").write_text("37\n", encoding="utf-8")
-            adapter = ArbiterInboxAdapter(project, voice)
+            # Keep the compatibility-path fixture hermetic even when a user-level
+            # Presence Runtime is installed on the test machine.
+            with patch("tui_bridge.RuntimePlaybackAdapter.available", return_value=False):
+                adapter = ArbiterInboxAdapter(project, voice)
 
             self.assertTrue(adapter.start())
             self.assertTrue(adapter.send({"type": "start", "stream_id": "s:t", "session_id": "s", "turn_id": "t"}))

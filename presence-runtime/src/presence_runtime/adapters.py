@@ -251,6 +251,9 @@ class ProjectAdapterManager:
 
     def start_all(self) -> None:
         for project in self.store.list_projects():
+            migration = self.store.migration_record(project["project_instance_id"])
+            if migration is None or migration["status"] != "committed":
+                continue
             try:
                 self.start_project(project)
             except BaseException as exc:
@@ -282,6 +285,11 @@ class ProjectAdapterManager:
             for project_id in known - set(projects):
                 self.stop_project(project_id)
             for project_id, project in projects.items():
+                migration = self.store.migration_record(project_id)
+                if migration is None or migration["status"] != "committed":
+                    if project_id in known:
+                        self.stop_project(project_id)
+                    continue
                 with self._lock:
                     managed = self._processes.get(project_id)
                     running = managed is not None and managed.process.poll() is None

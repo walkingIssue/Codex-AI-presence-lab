@@ -67,6 +67,30 @@ def test_avatar_assets_are_copied_into_immutable_fingerprint_directory(
     assert (catalog.root / "avatars" / key / "renderer" / "index.html").is_file()
 
 
+def test_existing_avatar_refreshes_only_derived_renderer_code(
+    tmp_path,
+    higan_pack: dict,
+) -> None:
+    source = tmp_path / "source-model"
+    source.mkdir()
+    (source / "Higan.model3.json").write_text("owned by user", encoding="utf-8")
+    catalog = Catalog(tmp_path / "catalog")
+    catalog.register_avatar(higan_pack, assets=source)
+    key = higan_pack["model_fingerprint"].removeprefix("sha256:")
+    target = catalog.root / "avatars" / key
+    renderer = target / "renderer" / "renderer.js"
+    renderer.write_text("stale derived code", encoding="utf-8")
+
+    catalog.register_avatar(higan_pack)
+
+    metadata = json.loads(
+        (target / "renderer" / "catalog-renderer.json").read_text(encoding="utf-8")
+    )
+    assert renderer.read_text(encoding="utf-8") != "stale derived code"
+    assert metadata["renderer_template_fingerprint"].startswith("sha256:")
+    assert (target / "assets" / "Higan.model3.json").read_text(encoding="utf-8") == "owned by user"
+
+
 def test_portable_export_refuses_overwrite_and_removal_checks_references(
     tmp_path,
 ) -> None:

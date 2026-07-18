@@ -60,3 +60,43 @@ for line in sys.stdin:
     assert request["tts_utterance_id"] == utterance_id
     worker.stop()
     assert worker.status()["running"] is False
+
+
+def test_worker_exposes_request_failure_diagnostic(tmp_path) -> None:
+    runtime_root = tmp_path / "presence"
+    runtime_root.mkdir()
+    worker_script = tmp_path / "failed_worker.py"
+    worker_script.write_text(
+        """
+import json
+import sys
+print(json.dumps({"ready": True}), flush=True)
+for line in sys.stdin:
+    json.loads(line)
+    print(json.dumps({"done": True, "ok": False, "error": "model rejected text"}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    worker = KokoroWorkerSupervisor(
+        runtime_root=runtime_root,
+        python=__import__("pathlib").Path(sys.executable),
+        worker_script=worker_script,
+    )
+    result = worker.speak(
+        {
+            "binding_id": str(uuid.uuid4()),
+            "utterance_id": str(uuid.uuid4()),
+            "event_id": "event:failed-worker",
+            "text": "Failure diagnostic.",
+            "kind": "final",
+            "tts": {
+                "voice_id": "af_heart",
+                "speed": 1.0,
+                "playback_mode": "stream",
+                "volume": 50,
+            },
+        }
+    )
+    assert result == "failed"
+    assert worker.status()["last_error"] == "model rejected text"
+    worker.stop()

@@ -48,7 +48,9 @@ def emit(value: Any, *, compact: bool = False) -> None:
             value,
             indent=None if compact else 2,
             sort_keys=True,
-            ensure_ascii=False,
+            # Windows launchers may inherit a legacy console code page. JSON
+            # escapes keep catalog paths and model labels lossless there.
+            ensure_ascii=True,
         )
     )
 

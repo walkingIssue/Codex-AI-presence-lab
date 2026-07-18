@@ -1916,6 +1916,28 @@ class PresenceStore:
         now = time.time()
         prior_ids = set(checkpoint.get("binding_ids", ()))
         with self.transaction() as connection:
+            # A process can exit while a consumer is acknowledging a staged
+            # snapshot.  Rollback must release that candidate before retry can
+            # stage the next revision for the same binding.
+            connection.execute(
+                """
+                UPDATE effective_snapshots
+                SET status='failed',
+                    diagnostic=COALESCE(diagnostic, 'migration interrupted'),
+                    acknowledged_at=?
+                WHERE status='candidate' AND binding_id IN (
+                    SELECT binding_id FROM bindings WHERE project_id=?
+                )
+                """,
+                (now, project_id),
+            )
+            connection.execute(
+                """
+                UPDATE bindings SET candidate_revision=NULL, updated_at=?
+                WHERE project_id=? AND candidate_revision IS NOT NULL
+                """,
+                (now, project_id),
+            )
             previous_default = checkpoint.get("project_default")
             if previous_default is None:
                 connection.execute(

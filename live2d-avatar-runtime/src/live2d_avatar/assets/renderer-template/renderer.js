@@ -5,8 +5,31 @@
   if (!config || typeof config !== "object") {
     throw new Error("Live2D avatar capabilities did not load");
   }
-  if (config.state_semantics !== "active-toggle-set") {
-    throw new Error("Live2D avatar does not declare active-toggle-set semantics");
+  const loadDiagnostics = {
+    stage: "initializing-capabilities",
+    modelPath: typeof config.model?.path === "string" ? config.model.path : null,
+    startedAt: Date.now(),
+  };
+  window.__PRESENCE_LIVE2D_DIAGNOSTICS__ = loadDiagnostics;
+
+  function markLoadStage(stage) {
+    loadDiagnostics.stage = stage;
+    loadDiagnostics.elapsedMs = Date.now() - loadDiagnostics.startedAt;
+  }
+
+  window.addEventListener("error", (event) => {
+    markLoadStage("failed");
+    loadDiagnostics.error = String(event.error?.message || event.message || "renderer error");
+    window.presenceRenderer?.failed(loadDiagnostics.error);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    markLoadStage("failed");
+    loadDiagnostics.error = String(event.reason?.message || event.reason || "renderer rejection");
+    window.presenceRenderer?.failed(loadDiagnostics.error);
+  });
+
+  if (!["active-toggle-set", "resolved-effective-snapshot"].includes(config.state_semantics)) {
+    throw new Error(`Live2D avatar declares unsupported state semantics: ${config.state_semantics}`);
   }
 
   const FALLBACK_WIDTH = 440;
@@ -158,6 +181,7 @@
   let lastHaloUpdateAt = -Infinity;
   let moveMode = false;
   let dragging = false;
+  markLoadStage("capabilities-initialized");
 
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
@@ -558,6 +582,7 @@
   }
 
   async function start() {
+    markLoadStage("validating-runtime");
     if (!window.PIXI?.live2d?.Live2DModel) throw new Error("Local Live2D renderer did not load");
     if (!config.model || typeof config.model.path !== "string") throw new Error("Avatar capabilities have no model path");
     PIXI.live2d.CubismConfig.supportMoreMaskDivisions = true;
@@ -575,11 +600,13 @@
       powerPreference: "high-performance",
       resolution: RENDER_RESOLUTION,
     });
+    markLoadStage("loading-model");
     model = await PIXI.live2d.Live2DModel.from(config.model.path, {
       autoInteract: false,
       autoFocus: false,
       autoUpdate: false,
     });
+    markLoadStage("model-loaded");
     model.interactive = false;
     model.interactiveChildren = false;
     app.stage.interactiveChildren = false;
@@ -594,12 +621,14 @@
       throw new Error("Live2D model does not expose indexed Cubism parameters");
     }
     resolveModelBindings();
+    markLoadStage("model-bound");
     rebuildComposedOperations();
     internalModel.on("beforeModelUpdate", renderAvatar);
     const updatePriority = Number(PIXI.UPDATE_PRIORITY?.HIGH) || 25;
     app.ticker.add(() => model.update(app.ticker.elapsedMS), null, updatePriority);
     app.start();
     applyActivityRule();
+    markLoadStage("ready");
     console.info("Live2D avatar state renderer ready", config.avatar_id);
     window.presenceRenderer?.ready();
   }
@@ -607,6 +636,8 @@
   attachOrbBridge();
   attachPresenceBridge();
   start().catch((error) => {
+    markLoadStage("failed");
+    loadDiagnostics.error = String(error?.message || error);
     console.error("Live2D avatar load failed", error);
     window.presenceRenderer?.failed(String(error?.message || error));
   });

@@ -9,8 +9,9 @@ import pytest
 
 from presence_runtime.catalog import Catalog
 from presence_runtime.controller import RecordingRenderer, RuntimeController
-from presence_runtime.errors import ValidationError
+from presence_runtime.errors import ConflictError, ValidationError
 from presence_runtime.migration import HIGAN_SLOTS, LegacyMigrator
+from presence_runtime.paths import presence_home
 from presence_runtime.store import PresenceStore
 from presence_runtime.worker import RecordingWorker
 
@@ -26,6 +27,11 @@ class Coordinator:
 
     def restart(self, _root: Path) -> None:
         self.restarts += 1
+
+
+@pytest.fixture(autouse=True)
+def isolated_codex_home(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
 
 
 def build_runtime(tmp_path):
@@ -178,6 +184,49 @@ def test_partial_legacy_install_synthesizes_a_reusable_default_profile(tmp_path)
     assert profile["profile_id"].endswith("-default")
 
 
+def test_migration_reclaims_a_lock_owned_by_a_dead_process(tmp_path) -> None:
+    controller, migrator, _coordinator = build_runtime(tmp_path)
+    root = tmp_path / "stale-lock"
+    voice = root / ".codex-voice"
+    voice.mkdir(parents=True)
+    (voice / "voice").write_text("bf_isabella\n", encoding="utf-8")
+    project = controller.store.register_project(root)
+    marker = (
+        presence_home()
+        / "migrations"
+        / f"{project['project_instance_id']}.lock"
+    )
+    marker.parent.mkdir(parents=True)
+    marker.write_text("2147483647", encoding="ascii")
+
+    result = migrator.migrate_on_registration(project["project_instance_id"], root)
+
+    assert result["status"] == "committed"
+    assert not marker.exists()
+
+
+def test_interrupted_migration_rollback_clears_a_staged_candidate(tmp_path) -> None:
+    controller, _migrator, _coordinator = build_runtime(tmp_path)
+    project = controller.store.register_project(tmp_path / "interrupted")
+    binding = controller.store.ensure_binding(project["project_instance_id"])
+    candidate = controller.resolve_binding(binding["binding_id"])
+    controller.store.stage_snapshot(candidate)
+
+    controller.store.rollback_legacy_configuration(
+        project_id=project["project_instance_id"],
+        checkpoint={
+            "project_default": None,
+            "binding_ids": [binding["binding_id"]],
+            "session_overrides": {binding["binding_id"]: None},
+            "geometry": {binding["binding_id"]: None},
+            "imported_event_ids": [],
+        },
+    )
+
+    assert controller.store.candidate_snapshot(binding["binding_id"]) is None
+    assert controller.store.binding(binding["binding_id"])["candidate_revision"] is None
+
+
 def test_malformed_child_rejects_without_partial_state_or_catalog(tmp_path) -> None:
     controller, migrator, coordinator = build_runtime(tmp_path)
     root = tmp_path / "malformed"
@@ -194,6 +243,9 @@ def test_malformed_child_rejects_without_partial_state_or_catalog(tmp_path) -> N
     assert migrator.status(project["project_instance_id"])["status"] == "failed"
     assert controller.store.project_default(project["project_instance_id"]) == {}
     assert controller.catalog.list_profiles() == []
+    assert coordinator.restarts == 1
+    with pytest.raises(ConflictError, match="migrate retry"):
+        migrator.migrate_on_registration(project["project_instance_id"], root)
     assert coordinator.restarts == 1
 
 
