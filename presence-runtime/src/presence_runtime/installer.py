@@ -345,6 +345,18 @@ def _electron_executable(renderer_root: Path) -> Path:
     return distribution / "electron"
 
 
+def _verify_live2d_package(python: Path) -> None:
+    code = (
+        "from pathlib import Path; import live2d_avatar; "
+        "root=Path(live2d_avatar.__file__).resolve().parent/'assets'/'renderer-template'; "
+        "required=['index.html','renderer.js','styles.css','vendor/pixi.min.js',"
+        "'vendor/live2dcubismcore.min.js']; "
+        "missing=[name for name in required if not (root/name).is_file()]; "
+        "assert not missing, f'missing packaged renderer assets: {missing}'"
+    )
+    _run([str(python), "-c", code])
+
+
 def install(
     *,
     source: Path | None = None,
@@ -434,6 +446,7 @@ def install(
                 str(staging / "live2d-runtime"),
             ]
         )
+        _verify_live2d_package(managed_python)
         _install_provider(selected_provider, base_python, layout["skill"], models)
         if with_input:
             stt_python = _ensure_environment(home / "stt" / ".venv", base_python)
