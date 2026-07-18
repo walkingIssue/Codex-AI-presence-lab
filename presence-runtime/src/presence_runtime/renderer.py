@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .catalog import Catalog
 from .models import EffectiveSnapshot
+from .presentation import PresentationCue
 from .resolver import PresenceResolver
 from .store import PresenceStore
 
@@ -357,10 +358,52 @@ class ElectronRendererSupervisor:
     def restore_snapshot(self, snapshot: EffectiveSnapshot) -> bool:
         return self.apply_snapshot(snapshot)
 
-    def apply_activity(self, snapshot: EffectiveSnapshot) -> bool:
-        # The activity overlay is already resolved in Python. Sending the same
-        # configuration revision updates exact actions without a JS merge.
-        return self.apply_snapshot(snapshot)
+    def activity_event(self, event: Mapping[str, Any]) -> bool:
+        try:
+            result = self._request(
+                {"type": "activity", "event": dict(event)},
+                timeout=5,
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            return False
+        return bool(result.get("routed"))
+
+    def apply_presentation(self, cue: PresentationCue) -> str:
+        timeout = (cue.duration_ms + 2000) / 1000
+        try:
+            result = self._request(
+                {"type": "presentation", "cue": cue.to_document()},
+                timeout=timeout,
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            raise RuntimeError(self._last_error) from exc
+        if (
+            result.get("binding_id") != cue.binding_id
+            or result.get("configuration_revision") != cue.configuration_revision
+            or result.get("presentation_sequence") != cue.sequence
+        ):
+            self._last_error = "renderer acknowledged a foreign presentation cue"
+            raise RuntimeError(self._last_error)
+        status = str(result.get("status") or "failed")
+        if status in {"completed", "cancelled"}:
+            self._last_error = None
+        else:
+            self._last_error = f"renderer returned presentation status {status!r}"
+            raise RuntimeError(self._last_error)
+        return status
+
+    def cancel_presentation(self, binding_id: str) -> bool:
+        try:
+            result = self._request(
+                {"type": "presentation-cancel", "binding_id": binding_id},
+                timeout=5,
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            return False
+        return bool(result.get("found"))
 
     def playback_event(self, event: Mapping[str, Any]) -> None:
         try:

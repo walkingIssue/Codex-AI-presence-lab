@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from rollout_adapter import RolloutAdapter, pid_exists
+from rollout_adapter import ActivityTracker, RolloutAdapter, pid_exists
 
 
 class FakePlayback:
@@ -108,3 +108,28 @@ def test_rollout_adapter_persists_cursor_and_emits_binding_scoped_events(
         )
     )
     assert next(iter(cursor["offsets"].values())) == rollout.stat().st_size
+
+
+def test_each_activity_timeout_emits_a_fresh_idle_event_id(tmp_path, monkeypatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr("rollout_adapter.time.monotonic", lambda: clock[0])
+    playback = FakePlayback()
+    tracker = ActivityTracker(playback)  # type: ignore[arg-type]
+    session_id = "019f69a4-6f05-7990-8160-90253f101ed6"
+    rollout = tmp_path / "rollout.jsonl"
+
+    tracker.update(rollout, "thinking", session_id, "thinking:1")
+    clock[0] = 13
+    tracker.tick()
+    first_idle = playback.activities[-1]
+
+    clock[0] = 14
+    tracker.update(rollout, "thinking", session_id, "thinking:2")
+    clock[0] = 27
+    tracker.tick()
+    second_idle = playback.activities[-1]
+
+    assert first_idle[0] == second_idle[0] == "idle"
+    assert first_idle[2].startswith("activity-timeout:")
+    assert second_idle[2].startswith("activity-timeout:")
+    assert first_idle[2] != second_idle[2]

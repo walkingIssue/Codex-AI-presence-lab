@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 let snapshotCallback = null;
 let eventCallback = null;
+let presentationCallback = null;
+let presentationCancelCallback = null;
 
 ipcRenderer.on("presence-snapshot", async (_event, snapshot) => {
   if (typeof snapshotCallback !== "function") {
@@ -42,6 +44,38 @@ ipcRenderer.on("presence-event", async (_event, payload) => {
   }
 });
 
+ipcRenderer.on("presence-presentation", async (_event, cue) => {
+  if (typeof presentationCallback !== "function") {
+    ipcRenderer.send("presence-presentation-failed", {
+      binding_id: cue?.binding_id,
+      sequence: cue?.sequence,
+      error: "renderer did not register a presentation consumer",
+    });
+    return;
+  }
+  try {
+    const result = await presentationCallback(cue);
+    ipcRenderer.send("presence-presentation-completed", {
+      binding_id: cue.binding_id,
+      configuration_revision: cue.configuration_revision,
+      sequence: cue.sequence,
+      status: result?.status === "cancelled" ? "cancelled" : "completed",
+    });
+  } catch (error) {
+    ipcRenderer.send("presence-presentation-failed", {
+      binding_id: cue?.binding_id,
+      sequence: cue?.sequence,
+      error: String(error?.message || error),
+    });
+  }
+});
+
+ipcRenderer.on("presence-presentation-cancel", (_event, payload) => {
+  if (typeof presentationCancelCallback === "function") {
+    presentationCancelCallback(payload);
+  }
+});
+
 contextBridge.exposeInMainWorld("presenceRenderer", Object.freeze({
   onSnapshot(callback) {
     if (typeof callback !== "function") throw new TypeError("snapshot callback is required");
@@ -50,6 +84,14 @@ contextBridge.exposeInMainWorld("presenceRenderer", Object.freeze({
   onEvent(callback) {
     if (typeof callback !== "function") throw new TypeError("event callback is required");
     eventCallback = callback;
+  },
+  onPresentation(callback) {
+    if (typeof callback !== "function") throw new TypeError("presentation callback is required");
+    presentationCallback = callback;
+  },
+  onPresentationCancel(callback) {
+    if (typeof callback !== "function") throw new TypeError("presentation cancel callback is required");
+    presentationCancelCallback = callback;
   },
   ready() {
     ipcRenderer.send("presence-renderer-ready");

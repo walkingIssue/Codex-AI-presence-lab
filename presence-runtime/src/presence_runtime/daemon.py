@@ -119,6 +119,10 @@ def run() -> int:
         store = PresenceStore()
         catalog = Catalog()
         catalog.initialize()
+        # Model packs and their assets are immutable, but their generated
+        # renderer shell belongs to this runtime release.  Refresh it before
+        # Electron can load a stale catalog copy after an upgrade.
+        catalog.refresh_avatar_renderers()
         policy = store.runtime_settings()
         provider = str(policy["provider"])
         if provider not in available:
@@ -305,6 +309,7 @@ def run() -> int:
                 pending_transcriptions = tuple(transcription_threads)
             for thread in pending_transcriptions:
                 thread.join(timeout=5)
+            controller.close()
             voice.stop()
             stt.stop()
             renderer.close()

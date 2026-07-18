@@ -9,6 +9,11 @@ from typing import Any, Callable, Mapping, Protocol
 from .catalog import Catalog
 from .errors import ConflictError, PresenceError, ValidationError
 from .models import EffectiveSnapshot
+from .presentation import (
+    PresentationAcceptance,
+    PresentationCue,
+    PresentationScheduler,
+)
 from .resolver import PresenceResolver, builtin_model_pack
 from .store import PresenceStore
 
@@ -31,7 +36,11 @@ class RendererConsumer(Protocol):
 
     def restore_snapshot(self, snapshot: EffectiveSnapshot) -> bool: ...
 
-    def apply_activity(self, snapshot: EffectiveSnapshot) -> bool: ...
+    def activity_event(self, event: Mapping[str, Any]) -> bool: ...
+
+    def apply_presentation(self, cue: PresentationCue) -> str: ...
+
+    def cancel_presentation(self, binding_id: str) -> bool: ...
 
     def playback_event(self, event: Mapping[str, Any]) -> None: ...
 
@@ -43,7 +52,9 @@ class RecordingRenderer:
 
     def __init__(self) -> None:
         self.snapshots: dict[str, EffectiveSnapshot] = {}
-        self.activities: list[EffectiveSnapshot] = []
+        self.activities: list[dict[str, Any]] = []
+        self.presentations: list[PresentationCue] = []
+        self.cancelled_presentations: list[str] = []
         self.playback: list[dict[str, Any]] = []
         self.binding_activity: dict[str, bool] = {}
         self.removed: list[str] = []
@@ -57,9 +68,19 @@ class RecordingRenderer:
     def restore_snapshot(self, snapshot: EffectiveSnapshot) -> bool:
         return self.apply_snapshot(snapshot)
 
-    def apply_activity(self, snapshot: EffectiveSnapshot) -> bool:
+    def activity_event(self, event: Mapping[str, Any]) -> bool:
         if self.ready:
-            self.activities.append(snapshot)
+            self.activities.append(dict(event))
+        return self.ready
+
+    def apply_presentation(self, cue: PresentationCue) -> str:
+        if not self.ready:
+            return "failed"
+        self.presentations.append(cue)
+        return "completed"
+
+    def cancel_presentation(self, binding_id: str) -> bool:
+        self.cancelled_presentations.append(binding_id)
         return self.ready
 
     def playback_event(self, event: Mapping[str, Any]) -> None:
@@ -101,6 +122,7 @@ class RuntimeController:
         self.renderer = renderer
         self.resolver = resolver or PresenceResolver()
         self.input_status = input_status
+        self.presentation = PresentationScheduler(renderer)
 
     def ensure_effective(self, binding_id: str) -> EffectiveSnapshot:
         current = self.store.effective_snapshot(binding_id)
@@ -508,6 +530,8 @@ class RuntimeController:
         attention = self.store.attention()
         for binding in self.store.list_bindings(include_deleted=True):
             binding_id = binding["binding_id"]
+            if binding["state"] != "active":
+                self.presentation.cancel(binding_id)
             if binding["state"] == "deleted":
                 if attention.get("binding_id") == binding_id:
                     cancel = getattr(self.voice, "cancel_playback", None)
@@ -523,6 +547,10 @@ class RuntimeController:
                 setter(binding_id, binding["state"] == "active")
 
     def _stage_and_ack(self, candidate: EffectiveSnapshot) -> None:
+        # Transient cues are tied to one exact configuration revision. Cancel
+        # them before staging a new persistent snapshot so an old pose cannot
+        # write into a replacement renderer or newly selected avatar.
+        self.presentation.cancel(candidate.binding_id)
         self.store.stage_snapshot(candidate)
         try:
             if not self.voice.apply_snapshot(candidate):
@@ -576,7 +604,7 @@ class RuntimeController:
         binding_id: str,
         event_id: str,
         activity: str,
-    ) -> EffectiveSnapshot:
+    ) -> PresentationAcceptance:
         changed = self.store.set_activity(
             source_id=source_id,
             binding_id=binding_id,
@@ -585,16 +613,49 @@ class RuntimeController:
         )
         current = self.ensure_effective(binding_id)
         if not changed:
-            return current
-        overlay = self.resolve_binding(
+            presentation = self.presentation.status(binding_id)
+            active = presentation.get("active")
+            return PresentationAcceptance(
+                binding_id=binding_id,
+                effective_revision=current.revision,
+                activity=activity,
+                effective_actions=current.semantic.persistent_actions,
+                presentation_sequence=(
+                    active.get("sequence") if isinstance(active, Mapping) else None
+                ),
+                disposition="duplicate",
+                duplicate=True,
+            )
+
+        target = self.resolve_binding(
             binding_id,
             activity=activity,
             revision=current.revision,
         )
-        if not self.renderer.apply_activity(overlay):
-            self.renderer.restore_snapshot(current)
-            raise ConflictError("renderer rejected the activity overlay")
-        return overlay
+        sequence, disposition = self.presentation.submit(
+            base=current,
+            target=target,
+            activity=activity,
+            event_id=event_id,
+        )
+        event = {
+            "type": "activity",
+            "binding_id": binding_id,
+            "event_id": event_id,
+            "state": activity,
+            "presentation_sequence": sequence,
+        }
+        if not self.renderer.activity_event(event):
+            self.presentation.cancel(binding_id)
+            raise ConflictError("renderer rejected the activity event")
+        return PresentationAcceptance(
+            binding_id=binding_id,
+            effective_revision=current.revision,
+            activity=activity,
+            effective_actions=target.semantic.effective_actions,
+            presentation_sequence=sequence,
+            disposition=disposition,
+        )
 
     def enqueue_speech(
         self,
@@ -758,10 +819,16 @@ class RuntimeController:
             "last_known_good": snapshot.to_document() if snapshot else None,
             "worker": dict(self.voice.status()),
             "renderer": dict(self.renderer.status(binding_id)),
+            "presentation": dict(self.presentation.status(binding_id)),
         }
         if self.input_status is not None:
             result["voice_input"] = dict(self.input_status())
         return result
+
+    def close(self) -> None:
+        """Stop ephemeral presentation workers before renderer shutdown."""
+
+        self.presentation.close()
 
     def cancel_speech(self, binding_id: str, event_ids: list[str]) -> int:
         statuses = self.store.speech_statuses(binding_id, event_ids)

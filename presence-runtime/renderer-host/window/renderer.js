@@ -13,6 +13,7 @@ const COLORS = {
 let speaking = false;
 let activity = "idle";
 let energy = 0.12;
+let presentation = null;
 
 function render() {
   const target = speaking ? Math.max(0.3, energy) : activity === "idle" ? 0.12 : 0.24;
@@ -45,6 +46,31 @@ window.presenceRenderer.onEvent((event) => {
   }
 });
 
+window.presenceRenderer.onPresentation((cue) => new Promise((resolve) => {
+  if (presentation) {
+    clearTimeout(presentation.timer);
+    presentation.resolve({ status: "cancelled" });
+  }
+  const duration = Math.max(cue.enter_ms, cue.minimum_visible_ms) + cue.exit_ms;
+  const current = {
+    sequence: cue.sequence,
+    resolve,
+    timer: setTimeout(() => {
+      if (presentation !== current) return;
+      presentation = null;
+      resolve({ status: "completed" });
+    }, duration),
+  };
+  presentation = current;
+}));
+
+window.presenceRenderer.onPresentationCancel(() => {
+  if (!presentation) return;
+  const current = presentation;
+  presentation = null;
+  clearTimeout(current.timer);
+  current.resolve({ status: "cancelled" });
+});
+
 window.presenceRenderer.ready();
 requestAnimationFrame(render);
-

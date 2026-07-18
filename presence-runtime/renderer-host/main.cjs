@@ -10,8 +10,13 @@ const readline = require("readline");
 const net = require("net");
 const { fileURLToPath } = require("url");
 const { acceptEffectiveSnapshot } = require("./snapshot_contract.cjs");
+const { acceptPresentationCue } = require("./presentation_contract.cjs");
 const { WindowRegistry } = require("./window_registry.cjs");
 const { interactionBounds } = require("./interaction_geometry.cjs");
+const {
+  enforcePresenceWindow,
+  presenceWindowOptions,
+} = require("./window_options.cjs");
 
 const registry = new WindowRegistry();
 const waiters = new Map();
@@ -108,6 +113,18 @@ ipcMain.on("presence-snapshot-failed", (event, payload) => {
     payload?.revision,
     null,
     payload?.error || "snapshot failed",
+  );
+});
+ipcMain.on("presence-presentation-completed", (event, payload) => {
+  resolveWaiter(event.sender.id, "presentation", payload?.sequence, payload);
+});
+ipcMain.on("presence-presentation-failed", (event, payload) => {
+  resolveWaiter(
+    event.sender.id,
+    "presentation",
+    payload?.sequence,
+    null,
+    payload?.error || "presentation failed",
   );
 });
 
@@ -296,22 +313,11 @@ async function applyToWindow(record, snapshot) {
 async function createReplacement(command, previous) {
   const snapshot = acceptEffectiveSnapshot(command.snapshot);
   const geometry = geometryFor(command, previous);
-  const window = new BrowserWindow({
-    ...geometry,
-    show: false,
-    transparent: true,
-    frame: false,
-    resizable: true,
-    hasShadow: false,
-    backgroundColor: "#00000000",
-    skipTaskbar: false,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
-      contextIsolation: true,
-      sandbox: true,
-      nodeIntegration: false,
-    },
-  });
+  const window = new BrowserWindow(presenceWindowOptions(
+    geometry,
+    path.join(__dirname, "preload.cjs"),
+  ));
+  enforcePresenceWindow(window);
   const record = {
     bindingId: snapshot.binding_id,
     key: rendererKey(snapshot, command.resource),
@@ -320,6 +326,8 @@ async function createReplacement(command, previous) {
     revision: 0,
     active: command.active !== false,
     inputAllowed: command.input_allowed === true,
+    presentationSequence: null,
+    presentationStatus: "idle",
     ready: false,
     destroy() {
       if (!window.isDestroyed()) window.destroy();
@@ -487,6 +495,56 @@ function routeEvent(event) {
   return true;
 }
 
+async function applyPresentation(command) {
+  const cue = acceptPresentationCue(command.cue);
+  const record = registry.current(cue.binding_id);
+  if (!record || record.window.isDestroyed()) {
+    throw new Error("presentation binding has no renderer window");
+  }
+  if (record.revision !== cue.configuration_revision) {
+    throw new Error("presentation cue targets a stale configuration revision");
+  }
+  const persistent = record.snapshot?.semantic?.persistent_actions || [];
+  if (JSON.stringify(persistent) !== JSON.stringify(cue.base_actions)) {
+    throw new Error("presentation cue base does not match the persistent snapshot");
+  }
+  record.presentationSequence = cue.sequence;
+  record.presentationStatus = "presenting";
+  const timeout = Math.max(cue.enter_ms, cue.minimum_visible_ms) + cue.exit_ms + 2000;
+  const completed = waitFor(
+    record.window.webContents.id,
+    "presentation",
+    cue.sequence,
+    timeout,
+  );
+  record.window.webContents.send("presence-presentation", cue);
+  try {
+    const result = await completed;
+    const status = result?.status === "cancelled" ? "cancelled" : "completed";
+    record.presentationStatus = status;
+    return {
+      binding_id: cue.binding_id,
+      configuration_revision: cue.configuration_revision,
+      presentation_sequence: cue.sequence,
+      status,
+    };
+  } catch (error) {
+    record.presentationStatus = "failed";
+    throw error;
+  }
+}
+
+function cancelPresentation(bindingId) {
+  const record = registry.current(bindingId);
+  if (!record || record.window.isDestroyed()) return { found: false };
+  record.window.webContents.send("presence-presentation-cancel", {
+    binding_id: bindingId,
+    sequence: record.presentationSequence,
+  });
+  record.presentationStatus = "cancelling";
+  return { found: true };
+}
+
 async function handle(command) {
   if (!command || typeof command !== "object") throw new Error("command must be an object");
   if (command.type === "snapshot") {
@@ -505,6 +563,12 @@ async function handle(command) {
   }
   if (command.type === "activity") {
     return { routed: routeEvent(command.event) };
+  }
+  if (command.type === "presentation") {
+    return applyPresentation(command);
+  }
+  if (command.type === "presentation-cancel") {
+    return cancelPresentation(command.binding_id);
   }
   if (command.type === "binding-state") {
     const record = registry.current(command.binding_id);
@@ -534,6 +598,9 @@ async function handle(command) {
       renderer_key: record.key,
       active: record.active,
       visible: !record.window.isDestroyed() && record.window.isVisible(),
+      always_on_top: !record.window.isDestroyed() && record.window.isAlwaysOnTop(),
+      presentation_sequence: record.presentationSequence,
+      presentation_status: record.presentationStatus,
     }));
     return { root_pid: process.pid, udp_port: udpPort, windows: records };
   }

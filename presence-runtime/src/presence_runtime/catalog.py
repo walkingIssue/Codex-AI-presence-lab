@@ -184,6 +184,42 @@ class Catalog:
             entries.append(validate_model_pack(_read_json(path)))
         return sorted(entries, key=lambda item: (item["avatar_id"], item["version"]))
 
+    def refresh_avatar_renderers(self) -> list[str]:
+        """Refresh runtime-derived renderer shells without changing model packs.
+
+        Avatar fingerprints describe the immutable user model assets and semantic
+        capability document.  The HTML/JavaScript renderer surrounding those
+        assets belongs to the installed Presence Runtime, so it must follow a
+        runtime upgrade even when no avatar is imported again.
+        """
+
+        refreshed: list[str] = []
+        with self._lock:
+            self.initialize()
+            for pack in self.list_avatars():
+                if pack["renderer"]["kind"] != "live2d":
+                    continue
+                key = pack["model_fingerprint"].removeprefix("sha256:")
+                target = self.root / "avatars" / key
+                assets = target / "assets"
+                if not assets.is_dir():
+                    continue
+                try:
+                    from live2d_avatar.catalog_bundle import (
+                        catalog_bundle_is_current,
+                    )
+                except ImportError as exc:
+                    raise ConflictError(
+                        "Canonical Live2D runtime is unavailable; "
+                        "cannot refresh catalog renderers"
+                    ) from exc
+                renderer = target / "renderer"
+                if catalog_bundle_is_current(renderer, pack):
+                    continue
+                self._refresh_catalog_renderer(target, pack)
+                refreshed.append(f"{pack['avatar_id']}@{pack['version']}")
+        return refreshed
+
     def get_avatar(self, reference: str) -> dict[str, Any]:
         if reference.startswith("sha256:"):
             key = reference.removeprefix("sha256:")

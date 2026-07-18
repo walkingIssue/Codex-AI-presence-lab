@@ -14,6 +14,7 @@ import os
 import signal
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -276,7 +277,10 @@ class ActivityTracker:
             event_id = lease.event_id
         else:
             current = ("idle", self.visible[1], None)
-            event_id = stable_event_id("activity-timeout", self.visible[1], self.visible[2])
+            # A timeout is a new lifecycle transition every time. Reusing the
+            # same stable id caused the runtime event ledger to deduplicate the
+            # second and later idle reset for a session.
+            event_id = f"activity-timeout:{uuid.uuid4()}"
         if not force and current == self.visible:
             return
         if current == self.visible:

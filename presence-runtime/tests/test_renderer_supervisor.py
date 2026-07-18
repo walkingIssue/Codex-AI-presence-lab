@@ -8,6 +8,7 @@ from unittest.mock import Mock
 from presence_runtime.catalog import Catalog
 from presence_runtime.renderer import ElectronRendererSupervisor
 from presence_runtime.resolver import PresenceResolver, builtin_model_pack
+from presence_runtime.presentation import PresentationCue
 from presence_runtime.store import PresenceStore
 
 
@@ -46,8 +47,23 @@ for line in sys.stdin:
                     "renderer_key": snapshot["avatar_ref"],
                 },
             }
-    elif kind == "event":
+    elif kind in {"event", "activity"}:
         response = {"type": "response", "id": command["id"], "ok": True, "result": {"routed": True}}
+    elif kind == "presentation":
+        cue = command["cue"]
+        response = {
+            "type": "response",
+            "id": command["id"],
+            "ok": True,
+            "result": {
+                "binding_id": cue["binding_id"],
+                "configuration_revision": cue["configuration_revision"],
+                "presentation_sequence": cue["sequence"],
+                "status": "completed",
+            },
+        }
+    elif kind == "presentation-cancel":
+        response = {"type": "response", "id": command["id"], "ok": True, "result": {"found": True}}
     elif kind == "status":
         response = {
             "type": "response",
@@ -102,6 +118,25 @@ for line in sys.stdin:
             "utterance_id": "utterance-1",
         }
     )
+    assert renderer.activity_event(
+        {
+            "type": "activity",
+            "state": "thinking",
+            "binding_id": binding["binding_id"],
+            "event_id": "activity:1",
+        }
+    ) is True
+    cue = PresentationCue(
+        binding_id=binding["binding_id"],
+        configuration_revision=1,
+        sequence=1,
+        event_id="activity:1",
+        activity="thinking",
+        base_actions=(),
+        target_actions=("pose.thinking",),
+    )
+    assert renderer.apply_presentation(cue) == "completed"
+    assert renderer.cancel_presentation(binding["binding_id"]) is True
     assert renderer.set_binding_active(binding["binding_id"], False) is True
     assert renderer.remove_binding(binding["binding_id"]) is True
     renderer.close()

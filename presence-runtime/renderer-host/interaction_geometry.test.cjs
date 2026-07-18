@@ -16,7 +16,7 @@ test("moves without changing binding geometry size", () => {
   );
 });
 
-test("resizes from the lower-right with a safe minimum", () => {
+test("resizes from the lower-right with a safe minimum and fixed aspect", () => {
   assert.deepEqual(
     interactionBounds(
       { x: 10, y: 20, width: 400, height: 600 },
@@ -24,6 +24,27 @@ test("resizes from the lower-right with a safe minimum", () => {
       { x: -1000, y: -1000 },
       "resize",
     ),
-    { x: 10, y: 20, width: 160, height: 160 },
+    { x: 10, y: 20, width: 160, height: 240 },
+  );
+});
+
+test("uses the dominant normalized pointer delta for uniform resize", () => {
+  assert.deepEqual(
+    interactionBounds(
+      { x: 10, y: 20, width: 400, height: 600 },
+      { x: 100, y: 200 },
+      { x: 200, y: 210 },
+      "resize",
+    ),
+    { x: 10, y: 20, width: 500, height: 750 },
+  );
+  assert.deepEqual(
+    interactionBounds(
+      { x: 10, y: 20, width: 400, height: 600 },
+      { x: 100, y: 200 },
+      { x: 110, y: 350 },
+      "resize",
+    ),
+    { x: 10, y: 20, width: 500, height: 750 },
   );
 });

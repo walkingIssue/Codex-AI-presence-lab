@@ -23,11 +23,20 @@ function interactionBounds(startBounds, startPoint, currentPoint, mode) {
     };
   }
   if (mode === "resize") {
+    const width = Math.max(1, Number(startBounds.width));
+    const height = Math.max(1, Number(startBounds.height));
+    const horizontalScale = (width + deltaX) / width;
+    const verticalScale = (height + deltaY) / height;
+    const horizontalChange = Math.abs(horizontalScale - 1);
+    const verticalChange = Math.abs(verticalScale - 1);
+    let scale = horizontalChange >= verticalChange ? horizontalScale : verticalScale;
+    const minimumScale = Math.max(160 / width, 160 / height);
+    scale = Math.max(minimumScale, scale);
     return {
       x: Math.round(startBounds.x),
       y: Math.round(startBounds.y),
-      width: Math.max(160, Math.round(startBounds.width + deltaX)),
-      height: Math.max(160, Math.round(startBounds.height + deltaY)),
+      width: Math.round(width * scale),
+      height: Math.round(height * scale),
     };
   }
   throw new TypeError("renderer interaction mode is invalid");

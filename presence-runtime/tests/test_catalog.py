@@ -91,6 +91,26 @@ def test_existing_avatar_refreshes_only_derived_renderer_code(
     assert (target / "assets" / "Higan.model3.json").read_text(encoding="utf-8") == "owned by user"
 
 
+def test_runtime_startup_refreshes_all_derived_avatar_renderers(
+    tmp_path,
+    higan_pack: dict,
+) -> None:
+    source = tmp_path / "source-model"
+    source.mkdir()
+    (source / "Higan.model3.json").write_text("owned by user", encoding="utf-8")
+    catalog = Catalog(tmp_path / "catalog")
+    catalog.register_avatar(higan_pack, assets=source)
+    key = higan_pack["model_fingerprint"].removeprefix("sha256:")
+    target = catalog.root / "avatars" / key
+    renderer = target / "renderer" / "renderer.js"
+    renderer.write_text("stale runtime shell", encoding="utf-8")
+
+    assert catalog.refresh_avatar_renderers() == ["higan@3"]
+    assert renderer.read_text(encoding="utf-8") != "stale runtime shell"
+    assert catalog.refresh_avatar_renderers() == []
+    assert (target / "assets" / "Higan.model3.json").read_text(encoding="utf-8") == "owned by user"
+
+
 def test_portable_export_refuses_overwrite_and_removal_checks_references(
     tmp_path,
 ) -> None:

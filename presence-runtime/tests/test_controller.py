@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import time
 
 import pytest
 
@@ -208,7 +209,7 @@ def test_hidden_progress_drops_commentary_without_dropping_final_speech(
     assert final is not None
 
 
-def test_activity_overlay_is_recomputed_without_changing_configuration_revision(
+def test_activity_creates_a_finite_presentation_without_changing_configuration_revision(
     tmp_path,
     higan_pack,
 ) -> None:
@@ -220,7 +221,7 @@ def test_activity_overlay_is_recomputed_without_changing_configuration_revision(
         {"profile_ref": "higan-default"},
     )
     persistent = controller.store.effective_snapshot(source["binding_id"])
-    overlay = controller.set_activity(
+    accepted = controller.set_activity(
         source_id=source["source_id"],
         binding_id=source["binding_id"],
         event_id="activity:cli",
@@ -233,11 +234,24 @@ def test_activity_overlay_is_recomputed_without_changing_configuration_revision(
         activity="idle",
     )
 
-    assert overlay.revision == persistent.revision
-    assert "pose.pipe" in overlay.semantic.effective_actions
-    assert "pose.sweater-default" not in overlay.semantic.effective_actions
-    assert idle.semantic.effective_actions == persistent.semantic.persistent_actions
+    deadline = time.monotonic() + 1
+    while not renderer.presentations and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert accepted.effective_revision == persistent.revision
+    assert "pose.pipe" in accepted.effective_actions
+    assert "pose.sweater-default" not in accepted.effective_actions
+    assert accepted.presentation_sequence == 1
+    assert accepted.disposition == "scheduled"
+    assert idle.effective_actions == persistent.semantic.persistent_actions
+    assert idle.disposition == "cleared"
     assert len(renderer.activities) == 2
+    assert [event["state"] for event in renderer.activities] == ["cli", "idle"]
+    assert len(renderer.presentations) == 1
+    assert renderer.presentations[0].base_actions == persistent.semantic.persistent_actions
+    assert "pose.pipe" in renderer.presentations[0].target_actions
+    assert controller.store.effective_snapshot(source["binding_id"]) == persistent
+    controller.close()
 
 
 def test_dynamic_avatar_swap_is_session_local_and_restart_rehydrates_geometry(

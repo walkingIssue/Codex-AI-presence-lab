@@ -192,7 +192,7 @@ class RuntimeProtocolHandler:
             return {"type": "lease/refreshed", **refreshed}
         if message_type == "activity":
             self._require_fields(message, {"type", "event_id", "state"})
-            snapshot = self.controller.set_activity(
+            accepted = self.controller.set_activity(
                 source_id=context.source_id,
                 binding_id=context.binding_id,
                 event_id=message["event_id"],
@@ -201,8 +201,11 @@ class RuntimeProtocolHandler:
             return {
                 "type": "activity/accepted",
                 "event_id": message["event_id"],
-                "effective_revision": snapshot.revision,
-                "effective_actions": list(snapshot.semantic.effective_actions),
+                "effective_revision": accepted.effective_revision,
+                "effective_actions": list(accepted.effective_actions),
+                "presentation_sequence": accepted.presentation_sequence,
+                "disposition": accepted.disposition,
+                "duplicate": accepted.duplicate,
             }
         if message_type == "speech/enqueue":
             self._require_fields(
