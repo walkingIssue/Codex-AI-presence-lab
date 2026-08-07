@@ -301,22 +301,25 @@ class RuntimePlaybackAdapter:
 
     def _input_loop(self) -> None:
         while not self.input_stop.wait(0.4):
-            for session_id, client in tuple(self.clients.items()):
-                if session_id is None:
-                    continue
-                try:
-                    items = client.pending_inputs()
-                    for item in items:
-                        transcript = item.get("transcript")
-                        input_id = item.get("input_id")
-                        if not isinstance(transcript, str) or not isinstance(input_id, str):
-                            continue
-                        self._deliver_input(session_id, transcript)
-                        client.acknowledge_input(input_id)
-                except BaseException:
-                    # Delivery remains ready in SQLite and is retried; no
-                    # transcript is acknowledged merely because a connector failed.
-                    continue
+            self._poll_inputs_once()
+
+    def _poll_inputs_once(self) -> None:
+        for session_id, client in tuple(self.clients.items()):
+            if session_id is None:
+                continue
+            try:
+                items = client.pending_inputs()
+                for item in items:
+                    transcript = item.get("transcript")
+                    input_id = item.get("input_id")
+                    if not isinstance(transcript, str) or not isinstance(input_id, str):
+                        continue
+                    self._deliver_input(session_id, transcript)
+                    client.acknowledge_input(input_id)
+            except BaseException:
+                # Delivery remains ready in SQLite and is retried; no
+                # transcript is acknowledged merely because a connector failed.
+                continue
 
     def enqueue(self, message: dict[str, Any]) -> bool:
         session = message.get("session_id")

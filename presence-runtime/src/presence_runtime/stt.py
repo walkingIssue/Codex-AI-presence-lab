@@ -11,10 +11,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .paths import executable_path
+
 
 class STTWorkerSupervisor:
     def __init__(self, *, python: Path, script: Path, runtime_root: Path) -> None:
-        self.python = python.expanduser().resolve()
+        self.python = executable_path(python)
         self.script = script.expanduser().resolve()
         self.runtime_root = runtime_root.expanduser().resolve()
         self.process: subprocess.Popen[str] | None = None

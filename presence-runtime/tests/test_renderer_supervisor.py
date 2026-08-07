@@ -6,10 +6,45 @@ import sys
 from unittest.mock import Mock
 
 from presence_runtime.catalog import Catalog
-from presence_runtime.renderer import ElectronRendererSupervisor
+from presence_runtime.renderer import (
+    ElectronRendererSupervisor,
+    _electron_platform_arguments,
+)
 from presence_runtime.resolver import PresenceResolver, builtin_model_pack
 from presence_runtime.presentation import PresentationCue
 from presence_runtime.store import PresenceStore
+
+
+def test_linux_wayland_renderer_uses_xwayland_for_binding_geometry() -> None:
+    assert _electron_platform_arguments(
+        platform="linux",
+        environment={
+            "XDG_SESSION_TYPE": "wayland",
+            "WAYLAND_DISPLAY": "wayland-0",
+            "DISPLAY": ":0",
+        },
+    ) == ["--ozone-platform=x11"]
+
+
+def test_renderer_does_not_force_x11_outside_a_wayland_session() -> None:
+    assert _electron_platform_arguments(
+        platform="linux",
+        environment={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"},
+    ) == []
+    assert _electron_platform_arguments(
+        platform="win32",
+        environment={"XDG_SESSION_TYPE": "wayland", "DISPLAY": ":0"},
+    ) == []
+
+
+def test_wayland_without_an_xwayland_display_keeps_native_backend() -> None:
+    assert _electron_platform_arguments(
+        platform="linux",
+        environment={
+            "XDG_SESSION_TYPE": "wayland",
+            "WAYLAND_DISPLAY": "wayland-0",
+        },
+    ) == []
 
 
 def test_one_renderer_root_acknowledges_binding_and_persists_geometry(tmp_path) -> None:

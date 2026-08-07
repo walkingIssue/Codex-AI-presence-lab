@@ -233,12 +233,14 @@ def _systemd_quote(value: str | Path) -> str:
     return f'"{text}"'
 
 
-def write_systemd_unit() -> Path | None:
-    if os.name == "nt" or not shutil_which("systemctl"):
-        return None
-    unit = _unit_path()
-    unit.parent.mkdir(parents=True, exist_ok=True)
-    content = "\n".join(
+def _render_systemd_unit() -> str:
+    # WorkingDirectory= is a path directive, not an Exec*= command line.
+    # Fedora's systemd path parser treats surrounding quote characters as part
+    # of the path and consequently rejects a quoted absolute path as relative.
+    # Presence home is created before this unit is written and is always an
+    # absolute, normalized path.
+    working_directory = presence_home().resolve()
+    return "\n".join(
         [
             "[Unit]",
             "Description=Codex Presence Runtime",
@@ -247,7 +249,7 @@ def write_systemd_unit() -> Path | None:
             "[Service]",
             "Type=simple",
             f"ExecStart={_systemd_quote(runtime_python())} -m presence_runtime.daemon",
-            f"WorkingDirectory={_systemd_quote(presence_home())}",
+            f"WorkingDirectory={working_directory}",
             f"Environment={_systemd_quote('CODEX_HOME=' + str(codex_home()))}",
             "Restart=on-failure",
             "RestartSec=2",
@@ -257,7 +259,14 @@ def write_systemd_unit() -> Path | None:
             "",
         ]
     )
-    unit.write_text(content, encoding="utf-8", newline="\n")
+
+
+def write_systemd_unit() -> Path | None:
+    if os.name == "nt" or not shutil_which("systemctl"):
+        return None
+    unit = _unit_path()
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(_render_systemd_unit(), encoding="utf-8", newline="\n")
     _systemctl("daemon-reload")
     _systemctl("enable", SYSTEMD_UNIT)
     return unit

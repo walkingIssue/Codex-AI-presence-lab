@@ -62,3 +62,64 @@ def test_adapter_start_does_not_lease_an_unused_project_binding(
         assert None not in FakeBindingClient.started
     finally:
         adapter.close()
+
+
+class PendingInputClient:
+    def __init__(self, items: list[dict[str, str]]) -> None:
+        self.items = items
+        self.acknowledged: list[str] = []
+
+    def pending_inputs(self) -> list[dict[str, str]]:
+        return list(self.items)
+
+    def acknowledge_input(self, input_id: str) -> None:
+        self.acknowledged.append(input_id)
+
+    def close(self) -> None:
+        return
+
+
+def test_sequential_ready_transcripts_replace_clipboard_and_acknowledge_in_order(
+    tmp_path, monkeypatch
+) -> None:
+    adapter = runtime_adapter.RuntimePlaybackAdapter(tmp_path)
+    client = PendingInputClient(
+        [
+            {"input_id": "input-1", "transcript": "older transcript"},
+            {"input_id": "input-2", "transcript": "newest transcript"},
+        ]
+    )
+    adapter.clients["session-a"] = client
+    delivered: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        adapter,
+        "_deliver_input",
+        lambda session_id, transcript: delivered.append((session_id, transcript)),
+    )
+
+    adapter._poll_inputs_once()
+
+    assert delivered == [
+        ("session-a", "older transcript"),
+        ("session-a", "newest transcript"),
+    ]
+    assert client.acknowledged == ["input-1", "input-2"]
+
+
+def test_failed_clipboard_delivery_keeps_transcript_ready_for_retry(
+    tmp_path, monkeypatch
+) -> None:
+    adapter = runtime_adapter.RuntimePlaybackAdapter(tmp_path)
+    client = PendingInputClient(
+        [{"input_id": "input-1", "transcript": "retry this transcript"}]
+    )
+    adapter.clients["session-a"] = client
+
+    def fail_delivery(_session_id: str, _transcript: str) -> None:
+        raise RuntimeError("clipboard unavailable")
+
+    monkeypatch.setattr(adapter, "_deliver_input", fail_delivery)
+
+    adapter._poll_inputs_once()
+
+    assert client.acknowledged == []

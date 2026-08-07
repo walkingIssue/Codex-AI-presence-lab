@@ -11,6 +11,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -22,6 +23,17 @@ from .validation import validate_patch
 
 LEASE_REFRESH_SECONDS = 15
 LEASE_EXPIRY_SECONDS = 45
+
+
+def _serialized(method):
+    """Serialize every operation that uses the store's shared SQLite handle."""
+
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return locked
 
 
 SCHEMA = """
@@ -268,6 +280,7 @@ class PresenceStore:
             )
 
     @property
+    @_serialized
     def journal_mode(self) -> str:
         return str(self._connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
@@ -293,6 +306,7 @@ class PresenceStore:
             else:
                 self._connection.execute("COMMIT")
 
+    @_serialized
     def runtime_settings(self) -> dict[str, Any]:
         row = self._connection.execute(
             "SELECT provider, microphone_permission, updated_at FROM runtime_settings WHERE singleton=1"
@@ -381,6 +395,7 @@ class PresenceStore:
             "updated_at": _utc_iso(row["updated_at"]),
         }
 
+    @_serialized
     def project(self, project_id: str) -> dict[str, Any]:
         row = self._connection.execute(
             "SELECT * FROM projects WHERE project_id=?",
@@ -390,6 +405,7 @@ class PresenceStore:
             raise NotFoundError(f"Project instance {project_id!r} is not registered")
         return self._project_document(row)
 
+    @_serialized
     def project_for_root(self, root: str | Path) -> dict[str, Any]:
         normalized, _display = normalize_project_root(root)
         row = self._connection.execute(
@@ -421,6 +437,7 @@ class PresenceStore:
                 raise NotFoundError(f"Project instance {project_id!r} is not registered")
         return self.project(project_id)
 
+    @_serialized
     def list_projects(self, *, include_unregistered: bool = False) -> list[dict[str, Any]]:
         where = "" if include_unregistered else "WHERE registered=1"
         rows = self._connection.execute(
@@ -522,6 +539,7 @@ class PresenceStore:
             "current_activity": row["current_activity"],
         }
 
+    @_serialized
     def binding(self, binding_id: str) -> dict[str, Any]:
         row = self._connection.execute(
             "SELECT * FROM bindings WHERE binding_id=?",
@@ -531,6 +549,7 @@ class PresenceStore:
             raise NotFoundError(f"Binding {binding_id!r} does not exist")
         return self._binding_document(row)
 
+    @_serialized
     def list_bindings(
         self,
         *,
@@ -571,6 +590,7 @@ class PresenceStore:
                 (project_id, _canonical_json(normalized), now),
             )
 
+    @_serialized
     def project_default(self, project_id: str) -> dict[str, Any]:
         row = self._connection.execute(
             "SELECT patch_json FROM project_defaults WHERE project_id=?",
@@ -600,6 +620,7 @@ class PresenceStore:
                 (binding_id, _canonical_json(normalized), now),
             )
 
+    @_serialized
     def session_override(self, binding_id: str) -> dict[str, Any]:
         row = self._connection.execute(
             "SELECT patch_json FROM session_overrides WHERE binding_id=?",
@@ -744,6 +765,7 @@ class PresenceStore:
                     )
         return source_ids
 
+    @_serialized
     def assert_source_active(
         self,
         source_id: str,
@@ -773,6 +795,7 @@ class PresenceStore:
             "expires_at": _utc_iso(row["expires_at"]),
         }
 
+    @_serialized
     def active_sources(self) -> list[dict[str, Any]]:
         now = time.time()
         rows = self._connection.execute(
@@ -815,6 +838,7 @@ class PresenceStore:
                     (timestamp, row["binding_id"]),
                 )
 
+    @_serialized
     def next_revision(self, binding_id: str) -> int:
         row = self._connection.execute(
             """
@@ -1072,6 +1096,7 @@ class PresenceStore:
     def _snapshot_from_row(row: sqlite3.Row) -> EffectiveSnapshot:
         return EffectiveSnapshot.from_document(_decode_json(row["snapshot_json"]))
 
+    @_serialized
     def effective_snapshot(self, binding_id: str) -> EffectiveSnapshot | None:
         row = self._connection.execute(
             """
@@ -1082,6 +1107,7 @@ class PresenceStore:
         ).fetchone()
         return self._snapshot_from_row(row).acknowledged() if row else None
 
+    @_serialized
     def candidate_snapshot(self, binding_id: str) -> EffectiveSnapshot | None:
         row = self._connection.execute(
             """
@@ -1119,6 +1145,7 @@ class PresenceStore:
             ],
         )
 
+    @_serialized
     def catalog_references(self, kind: str, reference: str) -> list[str]:
         identifier = reference.split("@", 1)[0]
         rows = self._connection.execute(
@@ -1158,6 +1185,7 @@ class PresenceStore:
                 (binding_id, _canonical_json(dict(geometry)), time.time()),
             )
 
+    @_serialized
     def geometry(self, binding_id: str) -> dict[str, Any] | None:
         row = self._connection.execute(
             "SELECT geometry_json FROM renderer_geometry WHERE binding_id=?",
@@ -1275,6 +1303,7 @@ class PresenceStore:
             "cancel_reason": row["cancel_reason"],
         }
 
+    @_serialized
     def speech_items(self, *, binding_id: str | None = None) -> list[dict[str, Any]]:
         if binding_id is None:
             rows = self._connection.execute(
@@ -1287,6 +1316,7 @@ class PresenceStore:
             ).fetchall()
         return [self._speech_document(row) for row in rows]
 
+    @_serialized
     def speech_item(self, queue_id: int) -> dict[str, Any]:
         row = self._connection.execute(
             "SELECT * FROM speech_queue WHERE queue_id=?", (queue_id,)
@@ -1295,6 +1325,7 @@ class PresenceStore:
             raise NotFoundError(f"Speech queue item {queue_id} does not exist")
         return self._speech_document(row)
 
+    @_serialized
     def speech_statuses(
         self, binding_id: str, event_ids: list[str]
     ) -> dict[str, dict[str, Any]]:
@@ -1462,6 +1493,7 @@ class PresenceStore:
                 (binding_id, time.time()),
             )
 
+    @_serialized
     def attention(self) -> dict[str, Any]:
         row = self._connection.execute(
             "SELECT binding_id, utterance_id, state, updated_at FROM attention_state WHERE singleton=1"
@@ -1557,6 +1589,7 @@ class PresenceStore:
             if not changed:
                 raise NotFoundError(f"Active voice input {input_id!r} was not found")
 
+    @_serialized
     def pending_inputs(self, binding_id: str) -> list[dict[str, Any]]:
         self.binding(binding_id)
         rows = self._connection.execute(
@@ -1657,6 +1690,7 @@ class PresenceStore:
                     f"Staged configuration transaction {transaction_id!r} was not found"
                 )
 
+    @_serialized
     def migration_record(self, project_id: str) -> dict[str, Any] | None:
         row = self._connection.execute(
             "SELECT * FROM migration_ledger WHERE project_id=?",

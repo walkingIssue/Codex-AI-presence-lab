@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import uuid
 
 import pytest
@@ -41,6 +42,43 @@ def test_wal_project_identity_and_same_session_across_projects_are_isolated(
     assert repeated["project_instance_id"] == first["project_instance_id"]
     assert binding_a["binding_id"] != binding_b["binding_id"]
     assert binding_a["session_id"] == binding_b["session_id"] == session_id
+
+
+def test_shared_connection_reads_wait_for_active_transaction(tmp_path) -> None:
+    store = PresenceStore(tmp_path / "state.sqlite3")
+    project = store.register_project(tmp_path / "project")
+    binding = store.ensure_binding(project["project_instance_id"], new_session())
+    transaction_started = threading.Event()
+    release_transaction = threading.Event()
+    read_started = threading.Event()
+    read_finished = threading.Event()
+    observed: list[dict] = []
+
+    def hold_transaction() -> None:
+        with store.transaction():
+            transaction_started.set()
+            release_transaction.wait(timeout=2)
+
+    def read_binding() -> None:
+        read_started.set()
+        observed.append(store.binding(binding["binding_id"]))
+        read_finished.set()
+
+    holder = threading.Thread(target=hold_transaction)
+    holder.start()
+    assert transaction_started.wait(timeout=2)
+    reader = threading.Thread(target=read_binding)
+    reader.start()
+    assert read_started.wait(timeout=2)
+    assert read_finished.wait(timeout=0.1) is False
+
+    release_transaction.set()
+    holder.join(timeout=2)
+    reader.join(timeout=2)
+
+    assert holder.is_alive() is False
+    assert reader.is_alive() is False
+    assert observed == [store.binding(binding["binding_id"])]
 
 
 def test_project_binding_is_dedicated_and_session_overrides_persist_and_clear(

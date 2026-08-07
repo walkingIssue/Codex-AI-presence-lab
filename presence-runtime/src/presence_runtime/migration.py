@@ -558,6 +558,27 @@ class LegacyMigrator:
                 )
             session_patches[session_id] = {"profile_ref": profile_map[profile_id]}
         geometry = self._geometry(voice_root)
+        session_scope = _read_json(voice_root / "sessions.json")
+        if session_scope:
+            if session_scope.get("mode") == "session":
+                configured_geometry_sessions = {
+                    _canonical_session(raw_session)
+                    for raw_session, details in session_scope.get("sessions", {}).items()
+                    if isinstance(details, dict) and details.get("enabled") is True
+                }
+            else:
+                # Project scope has one project binding. Session-shaped window
+                # records are historical v0.1 routes, not live v0.2 bindings.
+                configured_geometry_sessions = set()
+        else:
+            # Older partial installs may have profile bindings without the
+            # separate session-scope document. Preserve those explicit routes.
+            configured_geometry_sessions = set(session_patches)
+        geometry = {
+            session_id: position
+            for session_id, position in geometry.items()
+            if session_id in configured_geometry_sessions
+        }
         speech, retired = self._pending_speech(voice_root, settings)
         validate_patch(project_patch, path="migration.project")
         for session_id, patch in session_patches.items():
