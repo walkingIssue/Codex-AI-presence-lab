@@ -1,7 +1,7 @@
 # Fedora Codex Voice Regression Results
 
 Recorded: 2026-08-03T11:15:03+02:00
-Updated through: 2026-08-07T02:35:51+02:00
+Updated through: 2026-08-07T02:43:55+02:00
 
 ## Outcome so far
 
@@ -64,29 +64,33 @@ claimed green.
 - Canonical repository: `walkingIssue/Codex-AI-presence-lab`.
 - Default branch: `main`.
 - Remote `main`: `80e44a1511e316968806568e84c81e2c204df19a`.
-- Current continuation base: `80e44a1511e316968806568e84c81e2c204df19a`
-  on the dedicated Fedora regression branch, with uncommitted tested fixes.
+- Fedora fix commit: `1f89e4507535186876023f6272b880663209cd4c`
+  on `test/fedora-v02-regression-20260803`, pushed to `origin`; the branch base is
+  `80e44a1511e316968806568e84c81e2c204df19a`.
 - Latest `main` E2E run: Actions run `29659276981`, successful for the exact
   candidate SHA. The workflow has a Windows job only, so it is not Fedora
   installation evidence.
 - Regression cards #1, #4, #6, #8, and #16 remain open and unchecked. Issue
   #16 still records Fedora migration, restart, uninstall, two-project proof,
   and nightly promotion as open.
-- Issue #21 tracks the Fedora/Wayland voice-input `ready` frame. The clipboard
-  deadlock now explains and repairs that terminal-state symptom.
+- Issue #21 tracked the Fedora/Wayland voice-input `ready` frame. The clipboard
+  deadlock explains and repairs that terminal-state symptom; the issue closed
+  after commit `1f89e45` was pushed.
 - Issue #28 tracks the Fedora/Wayland movement regression. Its local source fix
-  and regression tests are installed live, and movement is user-accepted.
-  Issue #27 separately tracks the renderer
+  and regression tests are installed live, movement is user-accepted, and the
+  issue is closed. Issue #27 separately tracked the renderer
   falling behind ordinary application windows; the same XWayland change is
-  installed live and user-accepted as fixing its stacking behavior.
-- Issue #29 tracks the flaky newest-transcript clipboard delivery. Its local
+  installed live and user-accepted as fixing its stacking behavior; it is also
+  closed.
+- Issue #29 tracked the flaky newest-transcript clipboard delivery. Its local
   fix, sequential/failure regression tests, durable backlog drain, and exact
-  live clipboard comparison pass.
-- Installation/runtime defects with fixes already present on the unpushed
-  regression branch are tracked by #22 (systemd unit), #24 (SQLite shared
+  live clipboard comparison pass, and the issue closed after the branch push.
+- Installation/runtime defects fixed by the pushed regression branch were
+  tracked by #22 (systemd unit), #24 (SQLite shared
   handle), #25 (stale geometry migration), and #26 (POSIX venv executable
-  identity). Issue #23 tracks the separately mitigated legacy Stop-hook
-  coexistence defect and has no source fix on this branch.
+  identity); all four are now closed. Issue #23 remains open for the separately
+  mitigated legacy Stop-hook coexistence defect and has no source fix on this
+  branch.
 - Stable release head `382115bd4a333bccadc4b112a86c5926bc2990d3`
   and nightly head `579c6eab53fab221e96d0c0fe762ccca19f5fdea`
   predate Presence Runtime v0.2. Neither is the tested candidate. The tested
@@ -364,15 +368,15 @@ GitHub tracking and post-push resolution boundary:
 
 | Issue | Defect | Current state | Resolution boundary |
 | --- | --- | --- | --- |
-| [#22](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/22) | Fedora systemd rejects quoted `WorkingDirectory` | Fixed and tested locally | Resolve only after the source fix and regression test are pushed |
-| [#26](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/26) | POSIX worker launch dereferences venv Python symlinks | Fixed and tested locally | Resolve only after the shared executable-path fix and regression test are pushed |
-| [#25](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/25) | Migration revives disabled-session geometry as windows | Fixed and tested locally and live | Resolve only after the migration filter and regression test are pushed |
-| [#24](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/24) | Shared SQLite reads observe impossible transient state | Fixed and tested locally and live | Resolve only after read serialization and its concurrency test are pushed |
+| [#22](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/22) | Fedora systemd rejects quoted `WorkingDirectory` | Fixed and tested locally | Closed after commit `1f89e45` was pushed |
+| [#26](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/26) | POSIX worker launch dereferences venv Python symlinks | Fixed and tested locally | Closed after commit `1f89e45` was pushed |
+| [#25](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/25) | Migration revives disabled-session geometry as windows | Fixed and tested locally and live | Closed after commit `1f89e45` was pushed |
+| [#24](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/24) | Shared SQLite reads observe impossible transient state | Fixed and tested locally and live | Closed after commit `1f89e45` was pushed |
 | [#23](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/23) | Enabled v0.1 Stop hook duplicates v0.2 narration | Live configuration mitigated only | Keep open after this branch is pushed; a rollback-safe source transition is still required |
-| [#28](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/28) | Native Wayland prevents active Presence binding repositioning | Fixed, tested, installed, and user-accepted live | Resolve with the tested branch push |
-| [#27](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/27) | Presence renderer can fall behind ordinary application windows | Fixed locally by the XWayland backend change and user-accepted live | Resolve only after the shared backend fix and regression test are pushed |
-| [#29](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/29) | Daemonized Linux clipboard owner blocks newer STT transcripts | Fixed and tested in source/projection and live | Resolve with the clipboard fix and sequential/failure tests in the branch push |
-| [#21](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/21) | STT `ready` feedback frame remains amber | Same clipboard deadlock root cause fixed and proven live | Resolve with #29 after the branch push |
+| [#28](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/28) | Native Wayland prevents active Presence binding repositioning | Fixed, tested, installed, and user-accepted live | Closed after commit `1f89e45` was pushed |
+| [#27](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/27) | Presence renderer can fall behind ordinary application windows | Fixed locally by the XWayland backend change and user-accepted live | Closed after commit `1f89e45` was pushed |
+| [#29](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/29) | Daemonized Linux clipboard owner blocks newer STT transcripts | Fixed and tested in source/projection and live | Closed after commit `1f89e45` was pushed |
+| [#21](https://github.com/walkingIssue/Codex-AI-presence-lab/issues/21) | STT `ready` feedback frame remains amber | Same clipboard deadlock root cause fixed and proven live | Closed with #29 after commit `1f89e45` was pushed |
 
 Four live Fedora defects were exposed and fixed on the regression branch:
 
@@ -497,13 +501,12 @@ A tenth Fedora regression is fixed in source, projection, and the live runtime:
   Wayland Ctrl+Alt+left-drag, stacking, and post-restart geometry are green.
 - Obtain user-visible confirmation that Higan revision 6 removed both the shawl
   and stockings; runtime resolution and renderer acknowledgement are green.
-- Close #21 and #29 after the tested branch is pushed. Exact durable delivery,
-  acknowledgement, and newest-clipboard content are now proven live.
+- Exact durable delivery, acknowledgement, and newest-clipboard content are
+  proven live; #21 and #29 are closed.
 - Add a source-level migration/registration guard for enabled v0.1 Stop hooks;
   the current machine state is mitigated, but a clean repeat must not require a
   manual Codex configuration edit.
-- Commit and branch push are authorized for this continuation; no PR was
-  requested.
+- Commit `1f89e45` and the regression branch are pushed. No PR was requested.
 
 Current conclusion: the patched v0.2 candidate is source/projection healthy and
 the single-project Fedora migration, native Higan profile, semantic renderer,
