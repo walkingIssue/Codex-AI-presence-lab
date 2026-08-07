@@ -122,6 +122,29 @@ def agent_message(record: dict[str, Any], phase: str) -> str | None:
     return message if isinstance(message, str) and message.strip() else None
 
 
+def requests_escalated_permission(payload: dict[str, Any]) -> bool:
+    """Return whether a local tool call requests an explicit sandbox approval.
+
+    Codex records the current function bridge as JavaScript source, so the
+    nested ``exec_command`` arguments arrive in ``input`` as text rather than
+    a decoded tool envelope.  The bridge must recognize that request before
+    the host renders its approval UI; no separate ``approval_request`` event
+    is guaranteed to follow.
+    """
+
+    requested = payload.get("sandbox_permissions")
+    if requested == "require_escalated":
+        return True
+    request_input = payload.get("input")
+    if isinstance(request_input, dict):
+        return request_input.get("sandbox_permissions") == "require_escalated"
+    return (
+        isinstance(request_input, str)
+        and "sandbox_permissions" in request_input
+        and "require_escalated" in request_input
+    )
+
+
 def classify_activity(record: dict[str, Any]) -> str | None:
     payload = record.get("payload")
     payload = payload if isinstance(payload, dict) else {}
@@ -160,6 +183,8 @@ def classify_activity(record: dict[str, Any]) -> str | None:
             if normalized in SKILL_TOOL_NAMES:
                 return "skill"
             if normalized in {"request_user_input", "ask_user", "approval_request"}:
+                return "waiting"
+            if normalized in LOCAL_TOOL_NAMES and requests_escalated_permission(payload):
                 return "waiting"
             return "cli" if normalized in LOCAL_TOOL_NAMES else "tool"
         if inner_type in {"custom_tool_call_output", "function_call_output"}:
