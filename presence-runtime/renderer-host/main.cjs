@@ -78,18 +78,20 @@ function waiterKey(webContentsId, kind, revision = "") {
 function waitFor(webContentsId, kind, revision = "", timeoutMs = 15000) {
   const key = waiterKey(webContentsId, kind, revision);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      waiters.delete(key);
-      reject(new Error("renderer acknowledgement timed out"));
-    }, timeoutMs);
+    const timer = Number.isFinite(timeoutMs)
+      ? setTimeout(() => {
+        waiters.delete(key);
+        reject(new Error("renderer acknowledgement timed out"));
+      }, timeoutMs)
+      : null;
     waiters.set(key, {
       resolve(value) {
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
         waiters.delete(key);
         resolve(value);
       },
       reject(error) {
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
         waiters.delete(key);
         reject(error);
       },
@@ -566,7 +568,9 @@ async function applyPresentation(command) {
   }
   record.presentationSequence = cue.sequence;
   record.presentationStatus = "presenting";
-  const timeout = Math.max(cue.enter_ms, cue.minimum_visible_ms) + cue.exit_ms + 2000;
+  const timeout = cue.lifetime === "until-cleared"
+    ? null
+    : Math.max(cue.enter_ms, cue.minimum_visible_ms) + cue.exit_ms + 2000;
   const completed = waitFor(
     record.window.webContents.id,
     "presentation",

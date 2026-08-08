@@ -8,6 +8,7 @@ import queue
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import uuid
@@ -19,6 +20,30 @@ from .models import EffectiveSnapshot
 from .presentation import PresentationCue
 from .resolver import PresenceResolver
 from .store import PresenceStore
+
+
+def _electron_platform_arguments(
+    *,
+    platform: str | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Select a Linux display backend that preserves Presence window controls."""
+
+    current_platform = platform or sys.platform
+    current_environment = os.environ if environment is None else environment
+    if current_platform != "linux":
+        return []
+    native_wayland = (
+        str(current_environment.get("XDG_SESSION_TYPE", "")).lower() == "wayland"
+        or bool(current_environment.get("WAYLAND_DISPLAY"))
+    )
+    if native_wayland and current_environment.get("DISPLAY"):
+        # The Wayland protocol deliberately prohibits clients from reading or
+        # changing global window coordinates. Presence requires binding-scoped
+        # drag/resize and persisted placement, so Electron must use the
+        # session's XWayland bridge for this renderer host.
+        return ["--ozone-platform=x11"]
+    return []
 
 
 class ElectronRendererSupervisor:
@@ -68,7 +93,7 @@ class ElectronRendererSupervisor:
                 / "dist"
                 / "electron.exe"
             )
-        elif __import__("sys").platform == "darwin":
+        elif sys.platform == "darwin":
             electron = (
                 self.host_root
                 / "node_modules"
@@ -87,7 +112,11 @@ class ElectronRendererSupervisor:
                 / "dist"
                 / "electron"
             )
-        return [str(electron), str(self.host_root)]
+        return [
+            str(electron),
+            *_electron_platform_arguments(),
+            str(self.host_root),
+        ]
 
     def start(self, *, timeout: float = 20.0) -> bool:
         process = self.process
@@ -297,9 +326,10 @@ class ElectronRendererSupervisor:
         self,
         document: Mapping[str, Any],
         *,
-        timeout: float = 20.0,
+        timeout: float | None = 20.0,
     ) -> dict[str, Any]:
-        if not self.start(timeout=timeout):
+        startup_timeout = 20.0 if timeout is None else timeout
+        if not self.start(timeout=startup_timeout):
             raise RuntimeError(self._last_error or "renderer host is unavailable")
         process = self.process
         writer = self._control_writer or (process.stdin if process is not None else None)
@@ -316,7 +346,19 @@ class ElectronRendererSupervisor:
                     json.dumps(payload, separators=(",", ":")) + "\n"
                 )
                 writer.flush()
-            response = response_queue.get(timeout=timeout)
+            if timeout is not None:
+                response = response_queue.get(timeout=timeout)
+            else:
+                while True:
+                    try:
+                        response = response_queue.get(timeout=1.0)
+                        break
+                    except queue.Empty:
+                        current = self.process
+                        if current is None or current.poll() is not None:
+                            raise RuntimeError(
+                                "renderer host exited during held presentation"
+                            )
         except queue.Empty as exc:
             raise RuntimeError("renderer host response timed out") from exc
         finally:
@@ -396,7 +438,8 @@ class ElectronRendererSupervisor:
         return bool(result.get("routed"))
 
     def apply_presentation(self, cue: PresentationCue) -> str:
-        timeout = (cue.duration_ms + 2000) / 1000
+        duration_ms = cue.duration_ms
+        timeout = None if duration_ms is None else (duration_ms + 2000) / 1000
         try:
             result = self._request(
                 {"type": "presentation", "cue": cue.to_document()},

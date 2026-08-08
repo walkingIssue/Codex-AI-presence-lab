@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from .errors import ConflictError
 from .models import EffectiveSnapshot
+from .paths import executable_path
 
 
 class KokoroWorkerSupervisor:
@@ -29,7 +30,7 @@ class KokoroWorkerSupervisor:
         dml_model_path: Path | None = None,
     ) -> None:
         self.runtime_root = runtime_root.expanduser().resolve()
-        self.python = python.expanduser().resolve()
+        self.python = executable_path(python)
         self.worker_script = worker_script.expanduser().resolve()
         self.renderer_udp_port = renderer_udp_port
         self.provider = provider

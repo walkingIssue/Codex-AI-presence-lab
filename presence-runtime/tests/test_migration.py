@@ -168,6 +168,39 @@ def test_full_migration_is_atomic_idempotent_and_explicitly_rollback_safe(tmp_pa
     assert coordinator.pauses == 2
 
 
+def test_migration_does_not_revive_geometry_for_disabled_sessions(tmp_path) -> None:
+    controller, migrator, _coordinator = build_runtime(tmp_path)
+    root = tmp_path / "project"
+    active_session = str(uuid.uuid4())
+    stale_session = str(uuid.uuid4())
+    write_legacy_project(root, active_session)
+    geometry_path = root / ".codex-voice" / "orb-position.json"
+    geometry = json.loads(geometry_path.read_text(encoding="utf-8"))
+    geometry["windows"][f"session:{stale_session}|profile:child"] = {
+        "x": 900,
+        "y": 100,
+        "width": 420,
+        "height": 640,
+    }
+    geometry_path.write_text(json.dumps(geometry), encoding="utf-8")
+    project = controller.store.register_project(root)
+
+    result = migrator.migrate_on_registration(project["project_instance_id"], root)
+
+    assert result["status"] == "committed"
+    bindings = controller.store.list_bindings(
+        project_id=project["project_instance_id"]
+    )
+    assert {binding["session_id"] for binding in bindings} == {
+        None,
+        active_session,
+    }
+    active = next(
+        binding for binding in bindings if binding["session_id"] == active_session
+    )
+    assert controller.store.geometry(active["binding_id"])["x"] == 41
+
+
 def test_partial_legacy_install_synthesizes_a_reusable_default_profile(tmp_path) -> None:
     controller, migrator, _coordinator = build_runtime(tmp_path)
     root = tmp_path / "partial"

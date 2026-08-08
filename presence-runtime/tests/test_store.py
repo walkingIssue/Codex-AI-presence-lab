@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import uuid
 
 import pytest
@@ -41,6 +42,43 @@ def test_wal_project_identity_and_same_session_across_projects_are_isolated(
     assert repeated["project_instance_id"] == first["project_instance_id"]
     assert binding_a["binding_id"] != binding_b["binding_id"]
     assert binding_a["session_id"] == binding_b["session_id"] == session_id
+
+
+def test_shared_connection_reads_wait_for_active_transaction(tmp_path) -> None:
+    store = PresenceStore(tmp_path / "state.sqlite3")
+    project = store.register_project(tmp_path / "project")
+    binding = store.ensure_binding(project["project_instance_id"], new_session())
+    transaction_started = threading.Event()
+    release_transaction = threading.Event()
+    read_started = threading.Event()
+    read_finished = threading.Event()
+    observed: list[dict] = []
+
+    def hold_transaction() -> None:
+        with store.transaction():
+            transaction_started.set()
+            release_transaction.wait(timeout=2)
+
+    def read_binding() -> None:
+        read_started.set()
+        observed.append(store.binding(binding["binding_id"]))
+        read_finished.set()
+
+    holder = threading.Thread(target=hold_transaction)
+    holder.start()
+    assert transaction_started.wait(timeout=2)
+    reader = threading.Thread(target=read_binding)
+    reader.start()
+    assert read_started.wait(timeout=2)
+    assert read_finished.wait(timeout=0.1) is False
+
+    release_transaction.set()
+    holder.join(timeout=2)
+    reader.join(timeout=2)
+
+    assert holder.is_alive() is False
+    assert reader.is_alive() is False
+    assert observed == [store.binding(binding["binding_id"])]
 
 
 def test_project_binding_is_dedicated_and_session_overrides_persist_and_clear(
@@ -113,6 +151,71 @@ def test_lease_expiry_dormants_binding_without_losing_configuration(
         now=201,
     )
     assert store.binding(registration["binding_id"])["state"] == "active"
+
+
+def test_waiting_lifecycles_are_durable_correlated_and_reference_counted(
+    tmp_path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    store = PresenceStore(path)
+    registration = store.register_source(
+        adapter="codex-rollout-v0.2",
+        project_root=tmp_path / "project",
+        session_id=new_session(),
+        capabilities=["activity"],
+    )
+    authority = {
+        "source_id": registration["source_id"],
+        "binding_id": registration["binding_id"],
+    }
+
+    first = store.open_activity(
+        **authority,
+        event_id="waiting:open:1",
+        lifecycle_id="call:1",
+        activity="waiting",
+    )
+    store.open_activity(
+        **authority,
+        event_id="waiting:open:2",
+        lifecycle_id="call:2",
+        activity="waiting",
+    )
+    held = store.set_activity(
+        **authority,
+        event_id="thinking:shadowed",
+        activity="thinking",
+    )
+
+    assert first["opened"] is True
+    assert held["held"] is True
+    assert store.binding(registration["binding_id"])["current_activity"] == "waiting"
+    assert len(store.open_activity_lifecycles(registration["binding_id"])) == 2
+
+    one_closed = store.close_activity(
+        **authority,
+        event_id="waiting:close:1",
+        lifecycle_id="call:1",
+        next_activity="thinking",
+        reason="resolved",
+    )
+    assert one_closed["activity"] == "waiting"
+
+    store.close()
+    restarted = PresenceStore(path)
+    assert [
+        item["lifecycle_id"]
+        for item in restarted.open_activity_lifecycles(registration["binding_id"])
+    ] == ["call:2"]
+    final = restarted.close_activity(
+        **authority,
+        event_id="waiting:close:2",
+        lifecycle_id="call:2",
+        next_activity="thinking",
+        reason="resolved",
+    )
+    assert final["activity"] == "thinking"
+    assert restarted.open_activity_lifecycles(registration["binding_id"]) == []
 
 
 def test_snapshot_ack_queue_stability_dedup_and_binding_removal(

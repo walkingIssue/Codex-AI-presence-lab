@@ -122,6 +122,29 @@ def agent_message(record: dict[str, Any], phase: str) -> str | None:
     return message if isinstance(message, str) and message.strip() else None
 
 
+def requests_escalated_permission(payload: dict[str, Any]) -> bool:
+    """Return whether a local tool call requests an explicit sandbox approval.
+
+    Codex records the current function bridge as JavaScript source, so the
+    nested ``exec_command`` arguments arrive in ``input`` as text rather than
+    a decoded tool envelope.  The bridge must recognize that request before
+    the host renders its approval UI; no separate ``approval_request`` event
+    is guaranteed to follow.
+    """
+
+    requested = payload.get("sandbox_permissions")
+    if requested == "require_escalated":
+        return True
+    request_input = payload.get("input")
+    if isinstance(request_input, dict):
+        return request_input.get("sandbox_permissions") == "require_escalated"
+    return (
+        isinstance(request_input, str)
+        and "sandbox_permissions" in request_input
+        and "require_escalated" in request_input
+    )
+
+
 def classify_activity(record: dict[str, Any]) -> str | None:
     payload = record.get("payload")
     payload = payload if isinstance(payload, dict) else {}
@@ -161,10 +184,72 @@ def classify_activity(record: dict[str, Any]) -> str | None:
                 return "skill"
             if normalized in {"request_user_input", "ask_user", "approval_request"}:
                 return "waiting"
+            if normalized in LOCAL_TOOL_NAMES and requests_escalated_permission(payload):
+                return "waiting"
             return "cli" if normalized in LOCAL_TOOL_NAMES else "tool"
         if inner_type in {"custom_tool_call_output", "function_call_output"}:
             return "thinking"
     return None
+
+
+def response_call_id(record: dict[str, Any]) -> str | None:
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    for field in ("call_id", "callId", "id"):
+        value = payload.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def waiting_lifecycle_id(
+    record: dict[str, Any],
+    *,
+    path: Path,
+    session_id: str,
+) -> str | None:
+    if classify_activity(record) != "waiting":
+        return None
+    payload = record.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    call_id = response_call_id(record)
+    seed = call_id or stable_event_id(
+        path,
+        record.get("timestamp"),
+        record.get("type"),
+        payload.get("type"),
+    )
+    return stable_event_id("activity-lifecycle", session_id, seed)
+
+
+def output_lifecycle_id(record: dict[str, Any], *, session_id: str) -> str | None:
+    payload = record.get("payload")
+    if record.get("type") != "response_item" or not isinstance(payload, dict):
+        return None
+    if payload.get("type") not in {"custom_tool_call_output", "function_call_output"}:
+        return None
+    call_id = response_call_id(record)
+    return (
+        stable_event_id("activity-lifecycle", session_id, call_id)
+        if call_id is not None
+        else None
+    )
+
+
+def activity_reset_reason(record: dict[str, Any], activity: str) -> str | None:
+    payload = record.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    inner_type = payload.get("type")
+    if activity == "error":
+        return "error"
+    if activity != "idle":
+        return None
+    if inner_type == "session_end":
+        return "session-ended"
+    if inner_type == "turn_aborted":
+        return "cancelled"
+    return "turn-ended"
 
 
 class CursorStore:
@@ -257,40 +342,108 @@ class ActivityTracker:
     def __init__(self, playback: RuntimePlaybackAdapter) -> None:
         self.playback = playback
         self.leases: dict[Path, ActivityLease] = {}
-        self.visible: tuple[str, str | None, Path | None] = ("idle", None, None)
+        self.visible: dict[Path, tuple[str, str]] = {}
 
     def update(self, path: Path, state: str, session_id: str, event_id: str) -> None:
         if state == "idle":
             self.leases.pop(path, None)
         else:
             self.leases[path] = ActivityLease(state, session_id, time.monotonic(), event_id)
-        self.tick(force=True)
+        current = (state, session_id)
+        if self.visible.get(path) == current:
+            return
+        self.playback.publish_activity(
+            state,
+            session_id=session_id,
+            event_id=event_id,
+        )
+        self.visible[path] = current
+
+    def open(
+        self,
+        path: Path,
+        *,
+        session_id: str,
+        event_id: str,
+        lifecycle_id: str,
+    ) -> None:
+        self.leases.pop(path, None)
+        opener = getattr(self.playback, "open_activity", None)
+        if not callable(opener):
+            self.update(path, "waiting", session_id, event_id)
+            return
+        if opener(
+            "waiting",
+            session_id=session_id,
+            event_id=event_id,
+            lifecycle_id=lifecycle_id,
+        ):
+            self.visible[path] = ("waiting", session_id)
+
+    def close(
+        self,
+        path: Path,
+        *,
+        session_id: str,
+        event_id: str,
+        lifecycle_id: str,
+        next_state: str,
+    ) -> bool:
+        closer = getattr(self.playback, "close_activity", None)
+        if not callable(closer):
+            return False
+        response = closer(
+            session_id=session_id,
+            event_id=event_id,
+            lifecycle_id=lifecycle_id,
+            next_state=next_state,
+            reason="resolved",
+        )
+        if not isinstance(response, dict) or not response.get("found"):
+            return False
+        self.leases.pop(path, None)
+        effective = response.get("state")
+        state = effective if isinstance(effective, str) else next_state
+        self.visible[path] = (state, session_id)
+        return True
+
+    def reset(
+        self,
+        path: Path,
+        *,
+        state: str,
+        session_id: str,
+        event_id: str,
+        reason: str,
+    ) -> None:
+        self.leases.pop(path, None)
+        resetter = getattr(self.playback, "reset_activity", None)
+        if callable(resetter):
+            resetter(
+                state,
+                session_id=session_id,
+                event_id=event_id,
+                reason=reason,
+            )
+            self.visible[path] = (state, session_id)
+            return
+        self.update(path, state, session_id, event_id)
 
     def tick(self, *, force: bool = False) -> None:
         now = time.monotonic()
         for path, lease in tuple(self.leases.items()):
             if now - lease.seen_at > ACTIVITY_TTL_SECONDS.get(lease.state, 12.0):
                 self.leases.pop(path, None)
-        if self.leases:
-            path, lease = max(self.leases.items(), key=lambda item: item[1].seen_at)
-            current = (lease.state, lease.session_id, path)
-            event_id = lease.event_id
-        else:
-            current = ("idle", self.visible[1], None)
-            # A timeout is a new lifecycle transition every time. Reusing the
-            # same stable id caused the runtime event ledger to deduplicate the
-            # second and later idle reset for a session.
-            event_id = f"activity-timeout:{uuid.uuid4()}"
-        if not force and current == self.visible:
-            return
-        if current == self.visible:
-            return
-        self.playback.publish_activity(
-            current[0],
-            session_id=current[1],
-            event_id=event_id,
-        )
-        self.visible = current
+                if self.visible.get(path) == (lease.state, lease.session_id):
+                    # A timeout is a new lifecycle transition every time. Reusing
+                    # an id caused later idle resets to be deduplicated.
+                    event_id = f"activity-timeout:{uuid.uuid4()}"
+                    self.playback.publish_activity(
+                        "idle",
+                        session_id=lease.session_id,
+                        event_id=event_id,
+                    )
+                    self.visible[path] = ("idle", lease.session_id)
 
 
 class RolloutAdapter:
@@ -362,11 +515,60 @@ class RolloutAdapter:
         if enforce_start_time and record_time is not None and record_time < self.start_time:
             return
         activity = classify_activity(record)
-        if activity is not None:
+        lifecycle_id = waiting_lifecycle_id(
+            record,
+            path=path,
+            session_id=session_id,
+        )
+        output_id = output_lifecycle_id(record, session_id=session_id)
+        if lifecycle_id is not None:
+            event_id = stable_event_id(
+                "activity-open",
+                path,
+                record.get("timestamp"),
+                lifecycle_id,
+            )
+            self.activity.open(
+                path,
+                session_id=session_id,
+                event_id=event_id,
+                lifecycle_id=lifecycle_id,
+            )
+        elif output_id is not None:
+            event_id = stable_event_id(
+                "activity-close",
+                path,
+                record.get("timestamp"),
+                output_id,
+            )
+            if not self.activity.close(
+                path,
+                session_id=session_id,
+                event_id=event_id,
+                lifecycle_id=output_id,
+                next_state=activity or "thinking",
+            ):
+                self.activity.update(
+                    path,
+                    activity or "thinking",
+                    session_id,
+                    event_id,
+                )
+        elif activity is not None:
             event_id = stable_event_id(
                 "activity", path, record.get("timestamp"), record.get("type"), activity
             )
-            self.activity.update(path, activity, session_id, event_id)
+            reset_reason = activity_reset_reason(record, activity)
+            if reset_reason is not None:
+                self.activity.reset(
+                    path,
+                    state=activity,
+                    session_id=session_id,
+                    event_id=event_id,
+                    reason=reset_reason,
+                )
+            else:
+                self.activity.update(path, activity, session_id, event_id)
         turn_id = record_turn_id(record)
         commentary = agent_message(record, "commentary")
         if commentary is not None:

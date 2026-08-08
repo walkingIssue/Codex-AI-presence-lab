@@ -251,6 +251,7 @@ class RuntimeController:
             transaction_id,
             status="committed",
         )
+        self._restore_durable_activity(binding_id)
         return promoted.acknowledged()
 
     def set_project_default(
@@ -307,6 +308,8 @@ class RuntimeController:
             transaction_id,
             status="committed",
         )
+        for snapshot in promoted:
+            self._restore_durable_activity(snapshot.binding_id)
         return [snapshot.acknowledged() for snapshot in promoted]
 
     @staticmethod
@@ -478,6 +481,8 @@ class RuntimeController:
                 str(exc),
             )
             raise
+        for snapshot in promoted:
+            self._restore_durable_activity(snapshot.binding_id)
         return [snapshot.acknowledged() for snapshot in promoted]
 
     @staticmethod
@@ -528,6 +533,8 @@ class RuntimeController:
             renderer_ok = self.renderer.restore_snapshot(snapshot)
             target = restored if voice_ok and renderer_ok else failed
             target.append(binding["binding_id"])
+            if voice_ok and renderer_ok and binding["state"] == "active":
+                self._restore_durable_activity(binding["binding_id"])
         return {"restored": restored, "failed": failed}
 
     def sync_binding_visibility(self) -> None:
@@ -553,6 +560,8 @@ class RuntimeController:
                     remover(binding_id)
             elif callable(setter):
                 setter(binding_id, binding["state"] == "active")
+                if binding["state"] == "active":
+                    self._restore_durable_activity(binding_id)
 
     def _stage_and_ack(self, candidate: EffectiveSnapshot) -> None:
         # Transient cues are tied to one exact configuration revision. Cancel
@@ -613,28 +622,192 @@ class RuntimeController:
         event_id: str,
         activity: str,
     ) -> PresentationAcceptance:
-        changed = self.store.set_activity(
+        result = self.store.set_activity(
             source_id=source_id,
             binding_id=binding_id,
             event_id=event_id,
             activity=activity,
         )
-        current = self.ensure_effective(binding_id)
-        if not changed:
-            presentation = self.presentation.status(binding_id)
-            active = presentation.get("active")
-            return PresentationAcceptance(
-                binding_id=binding_id,
-                effective_revision=current.revision,
-                activity=activity,
-                effective_actions=current.semantic.persistent_actions,
-                presentation_sequence=(
-                    active.get("sequence") if isinstance(active, Mapping) else None
-                ),
+        effective = str(result["activity"])
+        if result["duplicate"]:
+            return self._current_activity_acceptance(
+                binding_id,
+                effective,
                 disposition="duplicate",
                 duplicate=True,
             )
+        if result["held"]:
+            return self._current_activity_acceptance(
+                binding_id,
+                effective,
+                disposition="held",
+            )
+        return self._present_activity(
+            binding_id=binding_id,
+            event_id=event_id,
+            activity=effective,
+        )
 
+    def open_activity(
+        self,
+        *,
+        source_id: str,
+        binding_id: str,
+        event_id: str,
+        lifecycle_id: str,
+        activity: str,
+    ) -> PresentationAcceptance:
+        result = self.store.open_activity(
+            source_id=source_id,
+            binding_id=binding_id,
+            event_id=event_id,
+            lifecycle_id=lifecycle_id,
+            activity=activity,
+        )
+        if not result["opened"]:
+            return self._current_activity_acceptance(
+                binding_id,
+                str(result["activity"]),
+                disposition="duplicate",
+                duplicate=True,
+            )
+        return self._present_activity(
+            binding_id=binding_id,
+            event_id=event_id,
+            activity="waiting",
+            lifetime="until-cleared",
+            lifecycle_id=lifecycle_id,
+            duplicate=bool(result["duplicate"]),
+        )
+
+    def close_activity(
+        self,
+        *,
+        source_id: str,
+        binding_id: str,
+        event_id: str,
+        lifecycle_id: str,
+        next_activity: str,
+        reason: str,
+    ) -> tuple[PresentationAcceptance, bool]:
+        result = self.store.close_activity(
+            source_id=source_id,
+            binding_id=binding_id,
+            event_id=event_id,
+            lifecycle_id=lifecycle_id,
+            next_activity=next_activity,
+            reason=reason,
+        )
+        effective = str(result["activity"])
+        if not result["found"] or not result["closed"]:
+            disposition = "duplicate" if result["duplicate"] else "not-found"
+            return (
+                self._current_activity_acceptance(
+                    binding_id,
+                    effective,
+                    disposition=disposition,
+                    duplicate=bool(result["duplicate"]),
+                ),
+                bool(result["found"]),
+            )
+        if effective == "waiting":
+            return (
+                self._current_activity_acceptance(
+                    binding_id,
+                    effective,
+                    disposition="held",
+                ),
+                True,
+            )
+        return (
+            self._present_activity(
+                binding_id=binding_id,
+                event_id=event_id,
+                activity=effective,
+                cancel_held=True,
+            ),
+            True,
+        )
+
+    def reset_activity(
+        self,
+        *,
+        source_id: str,
+        binding_id: str,
+        event_id: str,
+        activity: str,
+        reason: str,
+    ) -> PresentationAcceptance:
+        result = self.store.reset_activity(
+            source_id=source_id,
+            binding_id=binding_id,
+            event_id=event_id,
+            activity=activity,
+            reason=reason,
+        )
+        effective = str(result["activity"])
+        if result["duplicate"]:
+            return self._current_activity_acceptance(
+                binding_id,
+                effective,
+                disposition="duplicate",
+                duplicate=True,
+            )
+        if effective == "waiting":
+            return self._current_activity_acceptance(
+                binding_id,
+                effective,
+                disposition="held",
+            )
+        return self._present_activity(
+            binding_id=binding_id,
+            event_id=event_id,
+            activity=effective,
+            cancel_held=bool(result["closed"]),
+        )
+
+    def _current_activity_acceptance(
+        self,
+        binding_id: str,
+        activity: str,
+        *,
+        disposition: str,
+        duplicate: bool = False,
+    ) -> PresentationAcceptance:
+        current = self.ensure_effective(binding_id)
+        target = self.resolve_binding(
+            binding_id,
+            activity=activity,
+            revision=current.revision,
+        )
+        presentation = self.presentation.status(binding_id)
+        active = presentation.get("active")
+        return PresentationAcceptance(
+            binding_id=binding_id,
+            effective_revision=current.revision,
+            activity=activity,
+            effective_actions=target.semantic.effective_actions,
+            presentation_sequence=(
+                active.get("sequence") if isinstance(active, Mapping) else None
+            ),
+            disposition=disposition,
+            duplicate=duplicate,
+        )
+
+    def _present_activity(
+        self,
+        *,
+        binding_id: str,
+        event_id: str,
+        activity: str,
+        lifetime: str = "transient",
+        lifecycle_id: str | None = None,
+        cancel_held: bool = False,
+        duplicate: bool = False,
+    ) -> PresentationAcceptance:
+        current = self.ensure_effective(binding_id)
+        if cancel_held:
+            self.presentation.cancel(binding_id)
         target = self.resolve_binding(
             binding_id,
             activity=activity,
@@ -645,6 +818,8 @@ class RuntimeController:
             target=target,
             activity=activity,
             event_id=event_id,
+            lifetime=lifetime,
+            lifecycle_id=lifecycle_id,
         )
         event = {
             "type": "activity",
@@ -652,6 +827,7 @@ class RuntimeController:
             "event_id": event_id,
             "state": activity,
             "presentation_sequence": sequence,
+            "lifetime": lifetime,
         }
         if not self.renderer.activity_event(event):
             self.presentation.cancel(binding_id)
@@ -663,6 +839,27 @@ class RuntimeController:
             effective_actions=target.semantic.effective_actions,
             presentation_sequence=sequence,
             disposition=disposition,
+            duplicate=duplicate,
+        )
+
+    def _restore_durable_activity(self, binding_id: str) -> None:
+        lifecycles = self.store.open_activity_lifecycles(binding_id)
+        if not lifecycles:
+            return
+        presentation = self.presentation.status(binding_id)
+        active = presentation.get("active")
+        pending = presentation.get("pending")
+        for cue in (active, pending):
+            if isinstance(cue, Mapping) and cue.get("lifetime") == "until-cleared":
+                return
+        lifecycle = lifecycles[0]
+        self._present_activity(
+            binding_id=binding_id,
+            event_id=str(lifecycle["opened_event_id"]),
+            activity="waiting",
+            lifetime="until-cleared",
+            lifecycle_id=str(lifecycle["lifecycle_id"]),
+            duplicate=True,
         )
 
     def enqueue_speech(

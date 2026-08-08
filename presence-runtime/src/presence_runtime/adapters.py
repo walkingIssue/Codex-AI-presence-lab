@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from .errors import ConflictError, ValidationError
-from .paths import adapter_code_path, codex_home, runtime_python
+from .paths import adapter_code_path, codex_home, executable_path, runtime_python
 
 
 MANAGED_SCHEMA = "presence/project-adapter/v0.2"
@@ -48,7 +48,7 @@ class ProjectAdapterManager:
         script: Path | None = None,
     ) -> None:
         self.store = store
-        self.python = (python or runtime_python()).resolve()
+        self.python = executable_path(python or runtime_python())
         self.script = (
             script or (adapter_code_path() / "codex" / "rollout_adapter.py")
         ).resolve()

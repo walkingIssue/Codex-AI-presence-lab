@@ -201,6 +201,83 @@ class RuntimeProtocolHandler:
             return {
                 "type": "activity/accepted",
                 "event_id": message["event_id"],
+                "state": accepted.activity,
+                "effective_revision": accepted.effective_revision,
+                "effective_actions": list(accepted.effective_actions),
+                "presentation_sequence": accepted.presentation_sequence,
+                "disposition": accepted.disposition,
+                "duplicate": accepted.duplicate,
+            }
+        if message_type == "activity/open":
+            self._require_fields(
+                message,
+                {"type", "event_id", "state", "lifecycle_id"},
+            )
+            accepted = self.controller.open_activity(
+                source_id=context.source_id,
+                binding_id=context.binding_id,
+                event_id=message["event_id"],
+                lifecycle_id=message["lifecycle_id"],
+                activity=message["state"],
+            )
+            return {
+                "type": "activity/opened",
+                "event_id": message["event_id"],
+                "lifecycle_id": message["lifecycle_id"],
+                "state": accepted.activity,
+                "effective_revision": accepted.effective_revision,
+                "effective_actions": list(accepted.effective_actions),
+                "presentation_sequence": accepted.presentation_sequence,
+                "disposition": accepted.disposition,
+                "duplicate": accepted.duplicate,
+            }
+        if message_type == "activity/close":
+            self._require_fields(
+                message,
+                {
+                    "type",
+                    "event_id",
+                    "lifecycle_id",
+                    "next_state",
+                    "reason",
+                },
+            )
+            accepted, found = self.controller.close_activity(
+                source_id=context.source_id,
+                binding_id=context.binding_id,
+                event_id=message["event_id"],
+                lifecycle_id=message["lifecycle_id"],
+                next_activity=message["next_state"],
+                reason=message["reason"],
+            )
+            return {
+                "type": "activity/closed",
+                "event_id": message["event_id"],
+                "lifecycle_id": message["lifecycle_id"],
+                "found": found,
+                "state": accepted.activity,
+                "effective_revision": accepted.effective_revision,
+                "effective_actions": list(accepted.effective_actions),
+                "presentation_sequence": accepted.presentation_sequence,
+                "disposition": accepted.disposition,
+                "duplicate": accepted.duplicate,
+            }
+        if message_type == "activity/reset":
+            self._require_fields(
+                message,
+                {"type", "event_id", "state", "reason"},
+            )
+            accepted = self.controller.reset_activity(
+                source_id=context.source_id,
+                binding_id=context.binding_id,
+                event_id=message["event_id"],
+                activity=message["state"],
+                reason=message["reason"],
+            )
+            return {
+                "type": "activity/reset",
+                "event_id": message["event_id"],
+                "state": accepted.activity,
                 "effective_revision": accepted.effective_revision,
                 "effective_actions": list(accepted.effective_actions),
                 "presentation_sequence": accepted.presentation_sequence,

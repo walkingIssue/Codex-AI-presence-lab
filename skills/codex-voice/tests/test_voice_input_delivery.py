@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -75,6 +76,24 @@ class VoiceInputDeliveryTests(unittest.TestCase):
     def test_empty_clipboard_text_is_rejected(self) -> None:
         with self.assertRaises(ClipboardError):
             copy_text("   ")
+
+    def test_wayland_clipboard_owner_does_not_hold_captured_pipes(self) -> None:
+        with patch("clipboard.os.name", "posix"), patch(
+            "clipboard.shutil.which",
+            side_effect=lambda command: "/usr/bin/wl-copy"
+            if command == "wl-copy"
+            else None,
+        ), patch("clipboard.subprocess.run") as run:
+            copy_text("newest transcript")
+
+        run.assert_called_once_with(
+            ("wl-copy",),
+            input="newest transcript",
+            text=True,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def test_capture_finish_starts_stt_immediately_while_playback_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch("watcher.emit_orb_event"):

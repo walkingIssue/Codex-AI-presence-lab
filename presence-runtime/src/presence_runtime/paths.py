@@ -76,6 +76,16 @@ def runtime_python() -> Path:
     return environment / "bin" / "python"
 
 
+def executable_path(path: str | Path) -> Path:
+    """Make an executable path absolute without dereferencing venv shims."""
+
+    # POSIX virtual environments expose bin/python as a symlink to the base
+    # interpreter. Path.resolve() follows it and therefore launches Python
+    # without the virtual environment's site-packages. Keep the symlink as the
+    # executable identity while still normalizing relative components.
+    return Path(os.path.abspath(Path(path).expanduser()))
+
+
 def provider_python(provider: str) -> Path:
     environment = presence_home() / "providers" / provider / ".venv"
     if os.name == "nt":

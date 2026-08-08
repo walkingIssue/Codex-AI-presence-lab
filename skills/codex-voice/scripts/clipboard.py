@@ -26,13 +26,23 @@ def copy_text(text: str) -> None:
         if shutil.which(command[0]) is None:
             continue
         try:
-            subprocess.run(command, input=value, text=True, check=True, capture_output=True)
+            # wl-copy and xclip retain clipboard ownership by forking a
+            # background process.  Captured pipes stay open in that owner,
+            # which makes subprocess.run wait for EOF until the selection is
+            # replaced and blocks every newer transcript behind the first.
+            subprocess.run(
+                command,
+                input=value,
+                text=True,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             return
         except OSError as exc:
             raise ClipboardError(f"{command[0]} failed: {exc}") from exc
         except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or "").strip()
-            raise ClipboardError(f"{command[0]} failed{': ' + detail if detail else ''}") from exc
+            raise ClipboardError(f"{command[0]} failed") from exc
     raise ClipboardError("no supported local clipboard command is available")
 
 

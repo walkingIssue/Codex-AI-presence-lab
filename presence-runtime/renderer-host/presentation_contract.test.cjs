@@ -27,6 +27,18 @@ test("accepts and freezes a deterministic presentation cue", () => {
   assert.equal(Object.isFrozen(accepted.target_actions), true);
 });
 
+test("accepts an opaque until-cleared lifecycle without model payload", () => {
+  const accepted = acceptPresentationCue({
+    ...cue(),
+    schema: "presence/presentation-cue/v0.2",
+    activity: "waiting",
+    lifetime: "until-cleared",
+    lifecycle_id: "7e5c4f",
+  });
+  assert.equal(accepted.lifetime, "until-cleared");
+  assert.equal(accepted.lifecycle_id, "7e5c4f");
+});
+
 test("rejects an invalid lifetime or learned-model payload", () => {
   assert.throws(
     () => acceptPresentationCue({ ...cue(), minimum_visible_ms: 100 }),
@@ -36,5 +48,12 @@ test("rejects an invalid lifetime or learned-model payload", () => {
     () => acceptPresentationCue({ ...cue(), logits: [0.5] }),
     /unknown fields/,
   );
+  assert.throws(
+    () => acceptPresentationCue({
+      ...cue(),
+      schema: "presence/presentation-cue/v0.2",
+      lifetime: "until-cleared",
+    }),
+    /lifecycle_id is required/,
+  );
 });
-

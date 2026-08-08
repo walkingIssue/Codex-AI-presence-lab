@@ -1,8 +1,9 @@
 """Deterministic, binding-scoped semantic presentation scheduling.
 
 Persistent profile resolution deliberately stops at :class:`EffectiveSnapshot`.
-This module turns an already validated activity overlay into a finite renderer
-cue, while keeping all clocks and queue state ephemeral.
+This module turns an already validated activity overlay into a renderer cue.
+Transient cues remain finite. Correlated external-input cues may be held until
+the controller explicitly clears their durable lifecycle.
 """
 
 from __future__ import annotations
@@ -35,15 +36,27 @@ class PresentationCue:
     minimum_visible_ms: int = MINIMUM_VISIBLE_MS
     exit_ms: int = EXIT_MS
     easing: str = EASING
+    lifetime: str = "transient"
+    lifecycle_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.lifetime not in {"transient", "until-cleared"}:
+            raise ValueError(f"unsupported presentation lifetime: {self.lifetime}")
+        if self.lifetime == "until-cleared" and not self.lifecycle_id:
+            raise ValueError("until-cleared presentation requires a lifecycle id")
+        if self.lifetime == "transient" and self.lifecycle_id is not None:
+            raise ValueError("transient presentation may not carry a lifecycle id")
 
     @property
-    def duration_ms(self) -> int:
+    def duration_ms(self) -> int | None:
         # The minimum visible lifetime starts when the renderer accepts the
         # cue, so entry easing is included and exit begins no earlier than it.
+        if self.lifetime == "until-cleared":
+            return None
         return max(self.enter_ms, self.minimum_visible_ms) + self.exit_ms
 
     def to_document(self) -> dict[str, Any]:
-        return {
+        document: dict[str, Any] = {
             "schema": "presence/presentation-cue/v0.1",
             "binding_id": self.binding_id,
             "configuration_revision": self.configuration_revision,
@@ -57,6 +70,15 @@ class PresentationCue:
             "exit_ms": self.exit_ms,
             "easing": self.easing,
         }
+        if self.lifetime == "until-cleared":
+            document.update(
+                {
+                    "schema": "presence/presentation-cue/v0.2",
+                    "lifetime": self.lifetime,
+                    "lifecycle_id": self.lifecycle_id,
+                }
+            )
+        return document
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -66,6 +88,8 @@ class PresentationCue:
             "configuration_revision": self.configuration_revision,
             "target_actions": list(self.target_actions),
             "duration_ms": self.duration_ms,
+            "lifetime": self.lifetime,
+            "lifecycle_id": self.lifecycle_id,
         }
 
 
@@ -89,6 +113,8 @@ class SemanticPlanner(Protocol):
         activity: str,
         event_id: str,
         sequence: int,
+        lifetime: str = "transient",
+        lifecycle_id: str | None = None,
     ) -> PresentationCue | None: ...
 
 
@@ -103,6 +129,8 @@ class DeterministicSemanticPlanner:
         activity: str,
         event_id: str,
         sequence: int,
+        lifetime: str = "transient",
+        lifecycle_id: str | None = None,
     ) -> PresentationCue | None:
         if base.binding_id != target.binding_id:
             raise ValueError("presentation snapshots belong to different bindings")
@@ -125,6 +153,8 @@ class DeterministicSemanticPlanner:
                 if activity == "error"
                 else MINIMUM_VISIBLE_MS
             ),
+            lifetime=lifetime,
+            lifecycle_id=lifecycle_id,
         )
 
 
@@ -197,6 +227,8 @@ class PresentationScheduler:
         target: EffectiveSnapshot,
         activity: str,
         event_id: str,
+        lifetime: str = "transient",
+        lifecycle_id: str | None = None,
     ) -> tuple[int | None, str]:
         if self._closed:
             return None, "closed"
@@ -216,16 +248,32 @@ class PresentationScheduler:
             activity=activity,
             event_id=event_id,
             sequence=sequence,
+            lifetime=lifetime,
+            lifecycle_id=lifecycle_id,
         )
         if cue is None:
             return None, "no-pose"
         queued = _QueuedCue(cue=cue, snapshot=base)
         with state.condition:
-            active_target = state.active.cue.target_actions if state.active else None
-            pending_target = state.pending.cue.target_actions if state.pending else None
-            if cue.target_actions == active_target:
+            active_cue = state.active.cue if state.active else None
+            pending_cue = state.pending.cue if state.pending else None
+            if (
+                active_cue is not None
+                and active_cue.lifetime == "until-cleared"
+                and cue.lifetime == "transient"
+            ):
+                return active_cue.sequence, "held"
+            if (
+                active_cue is not None
+                and cue.target_actions == active_cue.target_actions
+                and cue.lifetime == active_cue.lifetime
+            ):
                 return state.active.cue.sequence, "coalesced"
-            if cue.target_actions == pending_target:
+            if (
+                pending_cue is not None
+                and cue.target_actions == pending_cue.target_actions
+                and cue.lifetime == pending_cue.lifetime
+            ):
                 return state.pending.cue.sequence, "coalesced"
             disposition = "queued" if state.active is not None else "scheduled"
             state.pending = queued
@@ -257,7 +305,12 @@ class PresentationScheduler:
                 state.active = queued
                 state.phase = "presenting"
                 state.started_at = self.clock()
-                state.deadline = state.started_at + (queued.cue.duration_ms + 2000) / 1000
+                duration_ms = queued.cue.duration_ms
+                state.deadline = (
+                    None
+                    if duration_ms is None
+                    else state.started_at + (duration_ms + 2000) / 1000
+                )
 
             status = "failed"
             diagnostic: str | None = None
@@ -351,13 +404,17 @@ class PresentationScheduler:
             if state.active is not None and state.started_at is not None:
                 cue = state.active.cue
                 elapsed_ms = max(0, round((self.clock() - state.started_at) * 1000))
-                remaining_ms = max(0, cue.duration_ms - elapsed_ms)
-                if state.phase != "cancelling":
+                duration_ms = cue.duration_ms
+                if duration_ms is not None:
+                    remaining_ms = max(0, duration_ms - elapsed_ms)
+                if state.phase != "cancelling" and cue.lifetime == "until-cleared":
+                    phase = "enter" if elapsed_ms < cue.enter_ms else "held"
+                elif state.phase != "cancelling" and duration_ms is not None:
                     if elapsed_ms < cue.enter_ms:
                         phase = "enter"
                     elif elapsed_ms < cue.minimum_visible_ms:
                         phase = "minimum-visible"
-                    elif elapsed_ms < cue.duration_ms:
+                    elif elapsed_ms < duration_ms:
                         phase = "exit"
                     else:
                         phase = "awaiting-ack"

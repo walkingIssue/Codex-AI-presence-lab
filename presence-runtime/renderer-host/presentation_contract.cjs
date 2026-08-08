@@ -14,7 +14,9 @@ const TOP_LEVEL = new Set([
   "exit_ms",
   "easing",
 ]);
+const V02_TOP_LEVEL = new Set([...TOP_LEVEL, "lifetime", "lifecycle_id"]);
 const ACTIVITIES = new Set(["thinking", "tool", "skill", "cli", "waiting", "error"]);
+const LIFETIMES = new Set(["transient", "until-cleared"]);
 
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
@@ -40,11 +42,13 @@ function acceptPresentationCue(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new TypeError("presentation cue must be an object");
   }
-  const unknown = Object.keys(input).filter((field) => !TOP_LEVEL.has(field));
+  const v02 = input.schema === "presence/presentation-cue/v0.2";
+  const allowed = v02 ? V02_TOP_LEVEL : TOP_LEVEL;
+  const unknown = Object.keys(input).filter((field) => !allowed.has(field));
   if (unknown.length) {
     throw new TypeError("presentation cue contains unknown fields: " + unknown.join(", "));
   }
-  if (input.schema !== "presence/presentation-cue/v0.1") {
+  if (input.schema !== "presence/presentation-cue/v0.1" && !v02) {
     throw new TypeError("presentation cue schema is unsupported");
   }
   if (typeof input.binding_id !== "string" || !input.binding_id) {
@@ -73,8 +77,21 @@ function acceptPresentationCue(input) {
   if (input.easing !== "easeInOutCubic") {
     throw new TypeError("presentation cue easing is unsupported");
   }
+  if (v02) {
+    if (!LIFETIMES.has(input.lifetime)) {
+      throw new TypeError("presentation cue lifetime is unsupported");
+    }
+    if (
+      input.lifetime === "until-cleared"
+      && (typeof input.lifecycle_id !== "string" || !input.lifecycle_id)
+    ) {
+      throw new TypeError("held presentation cue lifecycle_id is required");
+    }
+    if (input.lifetime === "transient" && input.lifecycle_id != null) {
+      throw new TypeError("transient presentation cue may not carry lifecycle_id");
+    }
+  }
   return deepFreeze(structuredClone(input));
 }
 
 module.exports = { acceptPresentationCue };
-

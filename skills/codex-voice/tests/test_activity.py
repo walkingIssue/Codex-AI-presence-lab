@@ -50,6 +50,24 @@ class ActivityClassifierTests(unittest.TestCase):
             "error",
         )
 
+    def test_escalated_local_command_waits_for_approval(self) -> None:
+        self.assertEqual(
+            classify_activity(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "name": "exec",
+                        "input": (
+                            'tools.exec_command({"cmd":"systemctl --user status",'
+                            '"sandbox_permissions":"require_escalated"})'
+                        ),
+                    },
+                }
+            ),
+            "waiting",
+        )
+
     def test_completion_and_visible_final_answer_return_to_idle(self) -> None:
         self.assertEqual(
             classify_activity(

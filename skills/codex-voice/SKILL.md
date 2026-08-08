@@ -225,6 +225,10 @@ Hold Ctrl+Alt+right mouse on an active session avatar to record. Recording start
 pauses that binding’s current voice; release stops capture, transcription is
 delivered to the same binding, and buffered playback resumes cleanly. Escape,
 modifier release, focus loss, window close, or a failed capture cancels safely.
+On Linux clipboard delivery, the adapter acknowledges a transcript only after
+the local clipboard command returns successfully. Daemonizing clipboard owners
+must not inherit captured stdio pipes, or one selection can block every newer
+transcript from being delivered.
 
 The renderer edge confirms the exact targeted binding: cyan for targeting or
 movement, amber corner markers for resizing, red while recording, violet while
@@ -234,6 +238,11 @@ implemented by mutating a Live2D profile or semantic action.
 
 Ctrl+Alt+left drag repositions a window. Ctrl+Alt+Shift+left drag resizes it.
 Geometry is keyed by binding id and survives avatar swaps and runtime restarts.
+On a Linux Wayland desktop with XWayland available, the managed Electron root
+runs through XWayland because native Wayland intentionally forbids clients from
+reading or changing global window coordinates. Codex and the rest of the
+desktop remain in their Wayland session; only the Presence renderer host uses
+the compatibility bridge required for exact drag, resize, and saved placement.
 
 ## Inspect and diagnose the real path
 

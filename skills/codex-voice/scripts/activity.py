@@ -51,6 +51,29 @@ def payload_of(record: dict) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def requests_escalated_permission(payload: dict) -> bool:
+    """Return whether a local tool call requests an explicit sandbox approval.
+
+    Codex records the current function bridge as JavaScript source, so the
+    nested ``exec_command`` arguments arrive in ``input`` as text rather than
+    a decoded tool envelope.  The bridge must recognize that request before
+    the host renders its approval UI; no separate ``approval_request`` event
+    is guaranteed to follow.
+    """
+
+    requested = payload.get("sandbox_permissions")
+    if requested == "require_escalated":
+        return True
+    request_input = payload.get("input")
+    if isinstance(request_input, dict):
+        return request_input.get("sandbox_permissions") == "require_escalated"
+    return (
+        isinstance(request_input, str)
+        and "sandbox_permissions" in request_input
+        and "require_escalated" in request_input
+    )
+
+
 def classify_activity(record: dict) -> str | None:
     """Map rollout metadata to a visual category without reading its content."""
 
@@ -100,6 +123,8 @@ def classify_activity(record: dict) -> str | None:
             if normalized_name in SKILL_TOOL_NAMES:
                 return "skill"
             if normalized_name in {"request_user_input", "ask_user", "approval_request"}:
+                return "waiting"
+            if normalized_name in LOCAL_TOOL_NAMES and requests_escalated_permission(payload):
                 return "waiting"
             return "cli" if normalized_name in LOCAL_TOOL_NAMES else "tool"
         if inner_type in {"custom_tool_call_output", "function_call_output"}:

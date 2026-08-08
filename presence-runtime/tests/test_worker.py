@@ -1,10 +1,25 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import uuid
 
+import pytest
+
+from presence_runtime.paths import executable_path
 from presence_runtime.worker import KokoroWorkerSupervisor
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX venv interpreters are symlinks")
+def test_executable_path_preserves_virtualenv_symlink(tmp_path) -> None:
+    base_python = tmp_path / "base-python"
+    base_python.touch()
+    venv_python = tmp_path / "venv-python"
+    venv_python.symlink_to(base_python)
+
+    assert executable_path(venv_python) == venv_python.absolute()
+    assert executable_path(venv_python) != base_python.resolve()
 
 
 def test_one_user_level_worker_is_reused_and_receives_binding_identity(tmp_path) -> None:

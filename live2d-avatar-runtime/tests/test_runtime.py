@@ -1102,6 +1102,42 @@ print(json.dumps(payload))
               if (cssProperties.get("--accent") !== "#8071ff") {
                 throw new Error("finite pose completion incorrectly cleared ongoing activity telemetry");
               }
+              clockMs = 3000;
+              const heldPresentationPromise = callbacks.presentation({
+                schema: "presence/presentation-cue/v0.2",
+                binding_id: "ebf6ea73-9ef8-4b06-bb3e-dab542e10440",
+                configuration_revision: 10,
+                sequence: 2,
+                event_id: "waiting:open",
+                activity: "waiting",
+                base_actions: ["toggle.base"],
+                target_actions: ["toggle.overlay"],
+                enter_ms: 180,
+                minimum_visible_ms: 900,
+                exit_ms: 180,
+                easing: "easeInOutCubic",
+                lifetime: "until-cleared",
+                lifecycle_id: "call-question",
+              });
+              clockMs = 3300;
+              lifecycle.beforeModelUpdate();
+              clockMs = 18000;
+              lifecycle.beforeModelUpdate();
+              if (values.get("control.base") !== 0 || values.get("control.overlay") !== 1) {
+                throw new Error("until-cleared presentation did not remain held");
+              }
+              callbacks.presentationCancel({ sequence: 2 });
+              clockMs = 18090;
+              lifecycle.beforeModelUpdate();
+              if (Math.abs(values.get("control.base") - 0.5) > 0.0001 || Math.abs(values.get("control.overlay") - 0.5) > 0.0001) {
+                throw new Error("held presentation cancellation did not ease to base");
+              }
+              clockMs = 18180;
+              lifecycle.beforeModelUpdate();
+              const heldPresentationResult = await heldPresentationPromise;
+              if (heldPresentationResult.status !== "cancelled" || values.get("control.base") !== 1 || values.get("control.overlay") !== 0) {
+                throw new Error("held presentation cancellation did not restore the persistent base");
+              }
               callbacks.avatar({ avatar_id: "demo-avatar", revision: 6, actions: [] });
               calls.length = 0; setCalls.length = 0; positionCalls.length = 0; model.rotation = 0;
               callbacks.audio({ type: "state", state: "speaking" });

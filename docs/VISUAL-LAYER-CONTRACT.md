@@ -13,7 +13,7 @@ The visual layer has three independent lanes:
 | Lane | Event types | Purpose |
 | --- | --- | --- |
 | Activity | `activity` | Why the host is busy: thinking, tool work, waiting, or error |
-| Presentation | `presence/presentation-cue/v0.1` | A finite, binding-scoped semantic gesture derived from activity |
+| Presentation | `presence/presentation-cue/v0.1` or `v0.2` | A binding-scoped semantic gesture; v0.2 may be held until explicitly cleared |
 | Playback | `state`, `audio`, `voice-output` | Whether speech is playing, its measured audio features, and the session that owns it |
 | Input status | `voice-input` | Local microphone/STT/delivery status; not model activity |
 
@@ -32,13 +32,30 @@ must not merge these lanes into one state variable.
 | `tool` | External or provider-mediated tool work | web search, function/tool call, MCP invocation | Amber/gold pulse | 8 s |
 | `skill` | Named skill/integration lifecycle is active | skill start/invocation | Magenta/deep-violet pulse | 12 s |
 | `cli` | Local command or patch execution is active | shell, terminal, command execution, patch apply | Green/teal pulse | 8 s |
-| `waiting` | Waiting for user, host approval, or another external input | explicit adapter state | Dim steady blue halo | 12 s |
+| `waiting` | Waiting for user, host approval, or another external input | correlated lifecycle open/close | Dim steady blue halo | until cleared when correlated; 12 s fallback |
 | `error` | A bounded, non-sensitive failure condition | explicit adapter/runtime error | Short red pulse, then idle | 4 s |
 
-The TTL is a lease, not an animation duration. Non-idle TTLs are
+For transient activity, the TTL is a lease, not an animation duration. Non-idle TTLs are
 clamped to `500..30000` ms at the bridge, and the renderer returns to `idle`
 when the lease expires. Adapters should refresh long-running work with the
-same state and a new sequence/timestamp. `idle` always has `ttl_ms: 0`.
+same state and a new sequence/timestamp. `idle` always has `ttl_ms: 0`. A
+correlated waiting lifecycle has no TTL and remains authoritative until its
+opaque lifecycle id is closed or the adapter explicitly resets its turn/session.
+
+### Durable waiting lifecycle
+
+Adapters that can correlate an external-input boundary use connection-bound
+`activity/open`, `activity/close`, and `activity/reset` messages. `open` carries
+only `state: "waiting"`, an event id, and an opaque lifecycle id. `close`
+identifies that exact lifecycle and names the next coarse state. `reset` closes
+every lifecycle owned by that adapter on the binding for a sanitized terminal
+reason such as `turn-ended`, `cancelled`, or `error`.
+
+Lifecycle ids are derived from session and upstream call identity. Prompt text,
+choices, commands, arguments, tool output, paths, and other provider payloads
+must never enter the Presence Runtime. Multiple open lifecycles are reference
+counted: waiting remains effective until the last one closes. Ordinary transient
+activity cannot displace an open waiting state.
 
 ## Semantic presentation contract
 
@@ -48,20 +65,25 @@ pose has returned to the persistent profile default. Effective configuration
 snapshots contain only persistent actions; they are never republished with the
 same revision merely to carry an activity overlay.
 
-The Python runtime deterministically resolves an activity into an internal
-`presence/presentation-cue/v0.1`. The cue names its binding, configuration
+The Python runtime deterministically resolves transient activity into an internal
+`presence/presentation-cue/v0.1`. A durable waiting lifecycle resolves to
+`presence/presentation-cue/v0.2`, which adds `lifetime: "until-cleared"` and an
+opaque lifecycle id. Both cue versions name their binding, configuration
 revision, monotonic per-binding presentation sequence, source event, persistent
 base actions, resolved target actions, entry/exit easing, and minimum visible
 lifetime. The renderer validates that the cue base matches its acknowledged
-snapshot, eases from base to target and back to base, and acknowledges
-completion with the same binding, revision, and sequence.
+snapshot and acknowledges completion with the same binding, revision, and
+sequence. A held cue enters normally, stays at its target, and eases back to the
+persistent base only after explicit cancellation.
 
-Each binding has one active cue and one latest-pending cue. The active cue is
+Each binding has one active cue and one latest-pending cue. A transient active cue is
 not interrupted before its minimum lifetime; newer pending states replace
 obsolete pending states. `idle` clears pending work but lets the active cue
 finish its bounded exit. A profile/avatar revision, dormant binding, removal,
-or shutdown cancels transient presentation state and restores the persistent
-base. Presentation cues are ephemeral and are not replayed after restart.
+or shutdown cancels renderer-local presentation state and restores the persistent
+base. Transient cues are ephemeral and are not replayed after restart. Open
+durable lifecycles are persisted centrally, and restart reconstructs a fresh cue
+against the acknowledged snapshot rather than replaying stale rendered actions.
 
 ### Tool and MCP normalization
 
@@ -182,6 +204,7 @@ idle.
 - Accept the closed activity vocabulary and ignore unknown future event types.
 - Clamp numeric audio values and tolerate missing/extra bands.
 - Expire non-idle activity leases safely to `idle`.
+- Never expire an `until-cleared` presentation; hold it until exact cancellation.
 - Keep activity, presentation, playback, and input status in separate local state.
 - Acknowledge presentation completion only after the persistent semantic base
   has been reapplied.
