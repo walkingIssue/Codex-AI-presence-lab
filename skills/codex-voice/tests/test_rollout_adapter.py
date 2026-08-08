@@ -13,10 +13,58 @@ from rollout_adapter import ActivityTracker, RolloutAdapter, pid_exists
 class FakePlayback:
     def __init__(self) -> None:
         self.activities: list[tuple[str, str | None, str]] = []
+        self.open_lifecycles: set[tuple[str | None, str]] = set()
         self.commentary: list[dict] = []
         self.finals: list[dict] = []
 
     def publish_activity(self, state: str, *, session_id: str | None, event_id: str) -> bool:
+        self.activities.append((state, session_id, event_id))
+        return True
+
+    def open_activity(
+        self,
+        state: str,
+        *,
+        session_id: str | None,
+        event_id: str,
+        lifecycle_id: str,
+    ) -> bool:
+        self.open_lifecycles.add((session_id, lifecycle_id))
+        self.activities.append((state, session_id, event_id))
+        return True
+
+    def close_activity(
+        self,
+        *,
+        session_id: str | None,
+        event_id: str,
+        lifecycle_id: str,
+        next_state: str,
+        reason: str,
+    ) -> dict:
+        key = (session_id, lifecycle_id)
+        if key not in self.open_lifecycles:
+            return {"type": "activity/closed", "found": False}
+        self.open_lifecycles.remove(key)
+        state = (
+            "waiting"
+            if any(item[0] == session_id for item in self.open_lifecycles)
+            else next_state
+        )
+        self.activities.append((state, session_id, event_id))
+        return {"type": "activity/closed", "found": True, "state": state}
+
+    def reset_activity(
+        self,
+        state: str,
+        *,
+        session_id: str | None,
+        event_id: str,
+        reason: str,
+    ) -> bool:
+        self.open_lifecycles = {
+            item for item in self.open_lifecycles if item[0] != session_id
+        }
         self.activities.append((state, session_id, event_id))
         return True
 
@@ -133,3 +181,70 @@ def test_each_activity_timeout_emits_a_fresh_idle_event_id(tmp_path, monkeypatch
     assert first_idle[2].startswith("activity-timeout:")
     assert second_idle[2].startswith("activity-timeout:")
     assert first_idle[2] != second_idle[2]
+
+
+def test_correlated_user_input_waits_past_the_old_lease_until_matching_output(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr("rollout_adapter.time.monotonic", lambda: clock[0])
+    codex_home = tmp_path / "codex"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    session_id = "019f69a4-6f05-7990-8160-90253f101ed6"
+    rollout = codex_home / "sessions" / "rollout-waiting.jsonl"
+    rollout.parent.mkdir(parents=True)
+    records = [
+        {
+            "timestamp": "2026-07-16T10:00:00Z",
+            "type": "session_meta",
+            "payload": {"cwd": str(project), "id": session_id},
+        },
+        {
+            "timestamp": "2026-07-16T10:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "request_user_input",
+                "call_id": "call-question",
+            },
+        },
+    ]
+    rollout.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    playback = FakePlayback()
+    adapter = RolloutAdapter(
+        project,
+        project / ".codex-voice" / "v0.2",
+        start_time=0,
+        playback=playback,  # type: ignore[arg-type]
+    )
+
+    adapter.scan(rollout)
+    assert [item[0] for item in playback.activities] == ["waiting"]
+    clock[0] = 60
+    adapter.activity.tick()
+    assert [item[0] for item in playback.activities] == ["waiting"]
+
+    with rollout.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-07-16T10:01:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call_output",
+                        "call_id": "call-question",
+                    },
+                }
+            )
+            + "\n"
+        )
+    adapter.scan(rollout)
+
+    assert [item[0] for item in playback.activities] == ["waiting", "thinking"]
+    assert playback.open_lifecycles == set()

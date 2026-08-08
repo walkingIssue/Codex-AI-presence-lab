@@ -403,18 +403,24 @@
       semanticFrameResult.status = null;
       return semanticFrameResult;
     }
-    if (presentation.cancelRequested) {
-      semanticFrameResult.values = presentation.baseValues;
-      semanticFrameResult.presentation = presentation;
-      semanticFrameResult.status = "cancelled";
-      return semanticFrameResult;
-    }
     const elapsed = Math.max(0, nowMilliseconds - presentation.startedAt);
     let weight = 1;
     let status = null;
-    if (elapsed < presentation.cue.enter_ms) {
+    if (presentation.cancelRequested) {
+      const exitElapsed = Math.max(0, nowMilliseconds - presentation.cancelStartedAt);
+      if (exitElapsed >= presentation.cue.exit_ms) {
+        weight = 0;
+        status = "cancelled";
+      } else {
+        weight = presentation.cancelStartWeight
+          * (1 - easeInOutCubic(exitElapsed / Math.max(1, presentation.cue.exit_ms)));
+      }
+    } else if (elapsed < presentation.cue.enter_ms) {
       weight = easeInOutCubic(elapsed / Math.max(1, presentation.cue.enter_ms));
-    } else if (elapsed >= presentation.cue.minimum_visible_ms) {
+    } else if (
+      presentation.cue.lifetime !== "until-cleared"
+      && elapsed >= presentation.cue.minimum_visible_ms
+    ) {
       const exitElapsed = elapsed - presentation.cue.minimum_visible_ms;
       if (exitElapsed >= presentation.cue.exit_ms) {
         weight = 0;
@@ -445,7 +451,13 @@
   }
 
   function applyPresentationCue(cue) {
-    if (!cue || cue.schema !== "presence/presentation-cue/v0.1") {
+    if (
+      !cue
+      || ![
+        "presence/presentation-cue/v0.1",
+        "presence/presentation-cue/v0.2",
+      ].includes(cue.schema)
+    ) {
       throw new Error("unsupported semantic presentation cue");
     }
     if (cue.configuration_revision !== effectiveRevision) {
@@ -471,6 +483,8 @@
         frameValues: new Map(),
         parameterIndices: new Set([...baseValues.keys(), ...targetValues.keys()]),
         cancelRequested: false,
+        cancelStartedAt: 0,
+        cancelStartWeight: 1,
         resolve,
       };
     });
@@ -480,6 +494,22 @@
     if (!currentPresentation) return;
     if (Number.isInteger(payload?.sequence)
         && payload.sequence !== currentPresentation.cue.sequence) return;
+    const now = performance.now();
+    const elapsed = Math.max(0, now - currentPresentation.startedAt);
+    let weight = 1;
+    if (elapsed < currentPresentation.cue.enter_ms) {
+      weight = easeInOutCubic(elapsed / Math.max(1, currentPresentation.cue.enter_ms));
+    } else if (
+      currentPresentation.cue.lifetime !== "until-cleared"
+      && elapsed >= currentPresentation.cue.minimum_visible_ms
+    ) {
+      const exitElapsed = elapsed - currentPresentation.cue.minimum_visible_ms;
+      weight = exitElapsed >= currentPresentation.cue.exit_ms
+        ? 0
+        : 1 - easeInOutCubic(exitElapsed / Math.max(1, currentPresentation.cue.exit_ms));
+    }
+    currentPresentation.cancelStartedAt = now;
+    currentPresentation.cancelStartWeight = weight;
     currentPresentation.cancelRequested = true;
   }
 

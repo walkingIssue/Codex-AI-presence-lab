@@ -198,6 +198,43 @@ def test_diagnostics_report_timed_phase_and_cue_remaining_time() -> None:
     scheduler.close()
 
 
+def test_until_cleared_cue_holds_without_a_deadline_and_rejects_transient_override() -> None:
+    binding_id = str(uuid.uuid4())
+    base = snapshot(binding_id)
+    renderer = BlockingRenderer()
+    now = [100.0]
+    scheduler = PresentationScheduler(renderer, clock=lambda: now[0])
+    waiting = snapshot(binding_id, effective=("pose.waiting",), activity="waiting")
+    thinking = snapshot(binding_id, effective=("pose.thinking",), activity="thinking")
+
+    assert scheduler.submit(
+        base=base,
+        target=waiting,
+        activity="waiting",
+        event_id="waiting:open",
+        lifetime="until-cleared",
+        lifecycle_id="call:1",
+    ) == (1, "scheduled")
+    renderer.wait_calls(1)
+    now[0] += 30
+
+    status = scheduler.status(binding_id)
+    assert status["phase"] == "held"
+    assert status["remaining_ms"] is None
+    assert status["watchdog_remaining_ms"] is None
+    assert status["active"]["lifecycle_id"] == "call:1"
+    assert scheduler.submit(
+        base=base,
+        target=thinking,
+        activity="thinking",
+        event_id="thinking:shadowed",
+    ) == (1, "held")
+
+    assert scheduler.cancel(binding_id) is True
+    assert scheduler.status(binding_id)["phase"] == "idle"
+    scheduler.close()
+
+
 def test_idle_clears_pending_without_preempting_the_active_cue() -> None:
     binding_id = str(uuid.uuid4())
     base = snapshot(binding_id)

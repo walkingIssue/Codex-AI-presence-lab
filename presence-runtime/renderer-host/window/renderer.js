@@ -55,12 +55,15 @@ window.presenceRenderer.onPresentation((cue) => new Promise((resolve) => {
   const current = {
     sequence: cue.sequence,
     resolve,
-    timer: setTimeout(() => {
+    timer: null,
+  };
+  if (cue.lifetime !== "until-cleared") {
+    current.timer = setTimeout(() => {
       if (presentation !== current) return;
       presentation = null;
       resolve({ status: "completed" });
-    }, duration),
-  };
+    }, duration);
+  }
   presentation = current;
 }));
 
@@ -68,7 +71,7 @@ window.presenceRenderer.onPresentationCancel(() => {
   if (!presentation) return;
   const current = presentation;
   presentation = null;
-  clearTimeout(current.timer);
+  if (current.timer !== null) clearTimeout(current.timer);
   current.resolve({ status: "cancelled" });
 });
 

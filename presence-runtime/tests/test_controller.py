@@ -254,6 +254,71 @@ def test_activity_creates_a_finite_presentation_without_changing_configuration_r
     controller.close()
 
 
+def test_waiting_lifecycle_blocks_transient_activity_and_rehydrates_after_restart(
+    tmp_path,
+    higan_pack,
+) -> None:
+    controller, _profile, _voice, renderer = runtime(tmp_path, higan_pack)
+    source = register(controller, tmp_path / "project")
+    controller.ensure_effective(source["binding_id"])
+    controller.set_project_default(
+        source["project_instance_id"],
+        {"profile_ref": "higan-default"},
+    )
+
+    opened = controller.open_activity(
+        source_id=source["source_id"],
+        binding_id=source["binding_id"],
+        event_id="waiting:open",
+        lifecycle_id="call:question",
+        activity="waiting",
+    )
+    shadowed = controller.set_activity(
+        source_id=source["source_id"],
+        binding_id=source["binding_id"],
+        event_id="thinking:shadowed",
+        activity="thinking",
+    )
+    deadline = time.monotonic() + 1
+    while not renderer.presentations and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert opened.activity == "waiting"
+    assert shadowed.activity == "waiting"
+    assert shadowed.disposition == "held"
+    assert renderer.activities[-1]["state"] == "waiting"
+    assert renderer.presentations[-1].lifetime == "until-cleared"
+    assert controller.store.binding(source["binding_id"])["current_activity"] == "waiting"
+
+    controller.close()
+    restarted_renderer = RecordingRenderer()
+    restarted = RuntimeController(
+        store=controller.store,
+        catalog=controller.catalog,
+        voice=RecordingWorker(),
+        renderer=restarted_renderer,
+    )
+    restarted.rehydrate()
+    deadline = time.monotonic() + 1
+    while not restarted_renderer.presentations and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert restarted_renderer.presentations[-1].lifecycle_id == "call:question"
+
+    closed, found = restarted.close_activity(
+        source_id=source["source_id"],
+        binding_id=source["binding_id"],
+        event_id="waiting:close",
+        lifecycle_id="call:question",
+        next_activity="thinking",
+        reason="resolved",
+    )
+    assert found is True
+    assert closed.activity == "thinking"
+    assert restarted.store.open_activity_lifecycles(source["binding_id"]) == []
+    assert restarted_renderer.activities[-1]["state"] == "thinking"
+    restarted.close()
+
+
 def test_dynamic_avatar_swap_is_session_local_and_restart_rehydrates_geometry(
     tmp_path,
     higan_pack,

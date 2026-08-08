@@ -18,11 +18,21 @@ from typing import Any, Iterator, Mapping
 from .errors import ConflictError, NotFoundError, ValidationError
 from .models import EffectiveSnapshot
 from .paths import normalize_project_root, state_database_path
-from .validation import validate_patch
+from .validation import ACTIVITY_STATES, validate_patch
 
 
 LEASE_REFRESH_SECONDS = 15
 LEASE_EXPIRY_SECONDS = 45
+ACTIVITY_RESET_REASONS = {
+    "approved",
+    "cancelled",
+    "denied",
+    "error",
+    "manual",
+    "resolved",
+    "session-ended",
+    "turn-ended",
+}
 
 
 def _serialized(method):
@@ -141,6 +151,22 @@ CREATE TABLE IF NOT EXISTS event_dedup (
     event_type TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS activity_lifecycles (
+    lifecycle_id TEXT PRIMARY KEY,
+    binding_id TEXT NOT NULL REFERENCES bindings(binding_id) ON DELETE CASCADE,
+    adapter TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state = 'waiting'),
+    status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
+    opened_event_id TEXT NOT NULL,
+    closed_event_id TEXT,
+    close_reason TEXT,
+    opened_at REAL NOT NULL,
+    closed_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS ix_activity_lifecycles_binding_open
+    ON activity_lifecycles(binding_id, status, opened_at);
 
 CREATE TABLE IF NOT EXISTS speech_queue (
     queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1447,7 +1473,59 @@ class PresenceStore:
                 """,
                 (now, binding_id),
             )
+            connection.execute(
+                """
+                UPDATE activity_lifecycles
+                SET status='closed', close_reason='cancelled', closed_at=?
+                WHERE binding_id=? AND status='open'
+                """,
+                (now, binding_id),
+            )
         return int(cancelled)
+
+    @staticmethod
+    def _validate_activity(activity: str) -> str:
+        if activity not in ACTIVITY_STATES:
+            raise ValidationError(f"unsupported activity: {activity}")
+        return activity
+
+    @staticmethod
+    def _validate_lifecycle_id(lifecycle_id: str) -> str:
+        if (
+            not isinstance(lifecycle_id, str)
+            or not lifecycle_id
+            or len(lifecycle_id) > 128
+        ):
+            raise ValidationError("activity lifecycle id must be 1 through 128 characters")
+        return lifecycle_id
+
+    @staticmethod
+    def _current_activity(
+        connection: sqlite3.Connection,
+        binding_id: str,
+    ) -> str:
+        row = connection.execute(
+            "SELECT current_activity FROM bindings WHERE binding_id=?",
+            (binding_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Binding {binding_id!r} does not exist")
+        value = row["current_activity"]
+        return value if value in ACTIVITY_STATES else "idle"
+
+    @staticmethod
+    def _has_open_activity(
+        connection: sqlite3.Connection,
+        binding_id: str,
+    ) -> bool:
+        return connection.execute(
+            """
+            SELECT 1 FROM activity_lifecycles
+            WHERE binding_id=? AND status='open'
+            LIMIT 1
+            """,
+            (binding_id,),
+        ).fetchone() is not None
 
     def set_activity(
         self,
@@ -1456,12 +1534,11 @@ class PresenceStore:
         binding_id: str,
         event_id: str,
         activity: str,
-    ) -> bool:
-        allowed = {"idle", "thinking", "tool", "skill", "cli", "waiting", "error"}
-        if activity not in allowed:
-            raise ValidationError(f"unsupported activity: {activity}")
+    ) -> dict[str, Any]:
+        activity = self._validate_activity(activity)
         self.assert_source_active(source_id, binding_id=binding_id)
         with self.transaction() as connection:
+            previous = self._current_activity(connection, binding_id)
             if not self.record_event(
                 event_id=event_id,
                 source_id=source_id,
@@ -1469,15 +1546,251 @@ class PresenceStore:
                 event_type=f"activity:{activity}",
                 connection=connection,
             ):
-                return False
+                return {
+                    "accepted": False,
+                    "duplicate": True,
+                    "held": False,
+                    "previous_activity": previous,
+                    "activity": previous,
+                }
+            held = self._has_open_activity(connection, binding_id)
+            effective = "waiting" if held else activity
             connection.execute(
                 """
                 UPDATE bindings SET current_activity=?, updated_at=?
                 WHERE binding_id=?
                 """,
-                (activity, time.time(), binding_id),
+                (effective, time.time(), binding_id),
             )
-        return True
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "held": held and activity != "waiting",
+            "previous_activity": previous,
+            "activity": effective,
+        }
+
+    def open_activity(
+        self,
+        *,
+        source_id: str,
+        binding_id: str,
+        event_id: str,
+        lifecycle_id: str,
+        activity: str,
+    ) -> dict[str, Any]:
+        lifecycle_id = self._validate_lifecycle_id(lifecycle_id)
+        activity = self._validate_activity(activity)
+        if activity != "waiting":
+            raise ValidationError("only waiting activity may be held until cleared")
+        source = self.assert_source_active(source_id, binding_id=binding_id)
+        adapter = str(source["adapter"])
+        with self.transaction() as connection:
+            previous = self._current_activity(connection, binding_id)
+            existing = connection.execute(
+                "SELECT * FROM activity_lifecycles WHERE lifecycle_id=?",
+                (lifecycle_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["binding_id"] != binding_id or existing["adapter"] != adapter:
+                    raise ValidationError(
+                        "activity lifecycle belongs to another binding or adapter"
+                    )
+                return {
+                    "accepted": False,
+                    "duplicate": True,
+                    "opened": existing["status"] == "open",
+                    "previous_activity": previous,
+                    "activity": previous,
+                }
+            if not self.record_event(
+                event_id=event_id,
+                source_id=source_id,
+                binding_id=binding_id,
+                event_type="activity-open:waiting",
+                connection=connection,
+            ):
+                return {
+                    "accepted": False,
+                    "duplicate": True,
+                    "opened": False,
+                    "previous_activity": previous,
+                    "activity": previous,
+                }
+            now = time.time()
+            connection.execute(
+                """
+                INSERT INTO activity_lifecycles(
+                    lifecycle_id, binding_id, adapter, state, status,
+                    opened_event_id, opened_at
+                ) VALUES(?, ?, ?, 'waiting', 'open', ?, ?)
+                """,
+                (lifecycle_id, binding_id, adapter, event_id, now),
+            )
+            connection.execute(
+                "UPDATE bindings SET current_activity='waiting', updated_at=? WHERE binding_id=?",
+                (now, binding_id),
+            )
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "opened": True,
+            "previous_activity": previous,
+            "activity": "waiting",
+        }
+
+    def close_activity(
+        self,
+        *,
+        source_id: str,
+        binding_id: str,
+        event_id: str,
+        lifecycle_id: str,
+        next_activity: str,
+        reason: str = "cancelled",
+    ) -> dict[str, Any]:
+        lifecycle_id = self._validate_lifecycle_id(lifecycle_id)
+        next_activity = self._validate_activity(next_activity)
+        if reason not in ACTIVITY_RESET_REASONS:
+            raise ValidationError(f"unsupported activity close reason: {reason}")
+        source = self.assert_source_active(source_id, binding_id=binding_id)
+        adapter = str(source["adapter"])
+        with self.transaction() as connection:
+            previous = self._current_activity(connection, binding_id)
+            lifecycle = connection.execute(
+                "SELECT * FROM activity_lifecycles WHERE lifecycle_id=?",
+                (lifecycle_id,),
+            ).fetchone()
+            if lifecycle is None:
+                return {
+                    "accepted": False,
+                    "duplicate": False,
+                    "found": False,
+                    "closed": False,
+                    "previous_activity": previous,
+                    "activity": previous,
+                }
+            if lifecycle["binding_id"] != binding_id or lifecycle["adapter"] != adapter:
+                raise ValidationError(
+                    "activity lifecycle belongs to another binding or adapter"
+                )
+            if lifecycle["status"] == "closed":
+                return {
+                    "accepted": False,
+                    "duplicate": True,
+                    "found": True,
+                    "closed": False,
+                    "previous_activity": previous,
+                    "activity": previous,
+                }
+            if not self.record_event(
+                event_id=event_id,
+                source_id=source_id,
+                binding_id=binding_id,
+                event_type="activity-close:waiting",
+                connection=connection,
+            ):
+                return {
+                    "accepted": False,
+                    "duplicate": True,
+                    "found": True,
+                    "closed": False,
+                    "previous_activity": previous,
+                    "activity": previous,
+                }
+            now = time.time()
+            connection.execute(
+                """
+                UPDATE activity_lifecycles
+                SET status='closed', closed_event_id=?, close_reason=?, closed_at=?
+                WHERE lifecycle_id=?
+                """,
+                (event_id, reason, now, lifecycle_id),
+            )
+            effective = (
+                "waiting"
+                if self._has_open_activity(connection, binding_id)
+                else next_activity
+            )
+            connection.execute(
+                "UPDATE bindings SET current_activity=?, updated_at=? WHERE binding_id=?",
+                (effective, now, binding_id),
+            )
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "found": True,
+            "closed": True,
+            "previous_activity": previous,
+            "activity": effective,
+        }
+
+    def reset_activity(
+        self,
+        *,
+        source_id: str,
+        binding_id: str,
+        event_id: str,
+        activity: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        activity = self._validate_activity(activity)
+        if reason not in ACTIVITY_RESET_REASONS:
+            raise ValidationError(f"unsupported activity reset reason: {reason}")
+        source = self.assert_source_active(source_id, binding_id=binding_id)
+        adapter = str(source["adapter"])
+        with self.transaction() as connection:
+            previous = self._current_activity(connection, binding_id)
+            if not self.record_event(
+                event_id=event_id,
+                source_id=source_id,
+                binding_id=binding_id,
+                event_type=f"activity-reset:{reason}",
+                connection=connection,
+            ):
+                return {
+                    "accepted": False,
+                    "duplicate": True,
+                    "closed": 0,
+                    "previous_activity": previous,
+                    "activity": previous,
+                }
+            now = time.time()
+            closed = connection.execute(
+                """
+                UPDATE activity_lifecycles
+                SET status='closed', closed_event_id=?, close_reason=?, closed_at=?
+                WHERE binding_id=? AND adapter=? AND status='open'
+                """,
+                (event_id, reason, now, binding_id, adapter),
+            ).rowcount
+            effective = (
+                "waiting" if self._has_open_activity(connection, binding_id) else activity
+            )
+            connection.execute(
+                "UPDATE bindings SET current_activity=?, updated_at=? WHERE binding_id=?",
+                (effective, now, binding_id),
+            )
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "closed": int(closed),
+            "previous_activity": previous,
+            "activity": effective,
+        }
+
+    @_serialized
+    def open_activity_lifecycles(self, binding_id: str) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            """
+            SELECT lifecycle_id, binding_id, adapter, state, opened_event_id, opened_at
+            FROM activity_lifecycles
+            WHERE binding_id=? AND status='open'
+            ORDER BY opened_at, lifecycle_id
+            """,
+            (binding_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def focus_binding(self, binding_id: str) -> None:
         binding = self.binding(binding_id)

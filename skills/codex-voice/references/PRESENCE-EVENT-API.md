@@ -56,6 +56,34 @@ idle, thinking, tool, skill, cli, waiting, error
 Transient states expire after `ttl_ms`; a renderer should return to `idle` when
 the lease expires or when it receives an explicit idle packet.
 
+Presence Runtime v0.2 also accepts a correlated durable waiting lifecycle over
+its authenticated, binding-scoped adapter connection:
+
+```json
+{
+  "type": "activity/open",
+  "event_id": "opaque-event-id",
+  "state": "waiting",
+  "lifecycle_id": "opaque-session-call-hash"
+}
+```
+
+```json
+{
+  "type": "activity/close",
+  "event_id": "opaque-event-id",
+  "lifecycle_id": "opaque-session-call-hash",
+  "next_state": "thinking",
+  "reason": "resolved"
+}
+```
+
+`activity/reset` supplies a coarse state and sanitized terminal reason to close
+all open lifecycles owned by that adapter on the exact binding. Open lifecycle
+records are centrally durable and reference counted. They contain no prompt,
+choice, command, argument, output, path, or provider payload. Legacy `activity`
+messages remain transient and cannot override a currently open durable wait.
+
 ## Visual activity contract
 
 The activity lane is deliberately separate from playback and microphone input.
@@ -66,8 +94,8 @@ is no renderer-specific `mcp-invocation` state. Shell, terminal, and patch
 work map to `cli`. A tool completion can remain `tool` until the next lifecycle
 event or lease expiry.
 
-Default activity leases are `thinking: 12s`, `tool: 8s`, `skill: 12s`,
-`cli: 8s`, `waiting: 12s`, and `error: 4s`; `idle` uses `ttl_ms: 0`. Bridges
+Default transient activity leases are `thinking: 12s`, `tool: 8s`, `skill: 12s`,
+`cli: 8s`, uncorrelated `waiting: 12s`, and `error: 4s`; `idle` uses `ttl_ms: 0`. Bridges
 clamp non-idle leases to `500..30000` ms, and renderers must safely expire
 them to idle. Adapters should refresh long-running activity with a new
 sequence and timestamp.

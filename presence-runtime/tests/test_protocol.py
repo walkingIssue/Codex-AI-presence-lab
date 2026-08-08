@@ -149,6 +149,60 @@ def test_connection_bound_registration_rejects_spoofed_authority_and_deduplicate
     assert not thread.is_alive()
 
 
+def test_activity_lifecycle_holds_until_the_matching_connection_bound_close(
+    tmp_path,
+) -> None:
+    handler, controller = build_handler(tmp_path)
+    client, thread = start_pair(handler)
+    registered = register(client, tmp_path / "project", str(uuid.uuid4()))
+
+    client.send(
+        {
+            "type": "activity/open",
+            "event_id": "waiting:open",
+            "state": "waiting",
+            "lifecycle_id": "call-question",
+        }
+    )
+    opened = client.recv()
+    assert opened["type"] == "activity/opened"
+    assert opened["state"] == "waiting"
+
+    client.send(
+        {
+            "type": "activity",
+            "event_id": "thinking:shadowed",
+            "state": "thinking",
+        }
+    )
+    shadowed = client.recv()
+    assert shadowed["state"] == "waiting"
+    assert shadowed["disposition"] == "held"
+    assert (
+        controller.store.binding(registered["binding_id"])["current_activity"]
+        == "waiting"
+    )
+
+    client.send(
+        {
+            "type": "activity/close",
+            "event_id": "waiting:close",
+            "lifecycle_id": "call-question",
+            "next_state": "thinking",
+            "reason": "resolved",
+        }
+    )
+    closed = client.recv()
+    assert closed["type"] == "activity/closed"
+    assert closed["found"] is True
+    assert closed["state"] == "thinking"
+
+    client.send({"type": "disconnect"})
+    assert client.recv()["type"] == "disconnected"
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
 def test_registration_rejects_adapter_selected_renderer_fields(tmp_path) -> None:
     handler, _controller = build_handler(tmp_path)
     client, thread = start_pair(handler)

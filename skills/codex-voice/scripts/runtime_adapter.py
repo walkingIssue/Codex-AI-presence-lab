@@ -183,6 +183,50 @@ class BindingClient:
         )
         return response.get("type") == "activity/accepted"
 
+    def open_activity(self, state: str, event_id: str, lifecycle_id: str) -> bool:
+        response = self._request(
+            {
+                "type": "activity/open",
+                "event_id": event_id,
+                "state": state,
+                "lifecycle_id": lifecycle_id,
+            }
+        )
+        return (
+            response.get("type") == "activity/opened"
+            and response.get("state") == "waiting"
+        )
+
+    def close_activity(
+        self,
+        lifecycle_id: str,
+        event_id: str,
+        *,
+        next_state: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        response = self._request(
+            {
+                "type": "activity/close",
+                "event_id": event_id,
+                "lifecycle_id": lifecycle_id,
+                "next_state": next_state,
+                "reason": reason,
+            }
+        )
+        return response if response.get("type") == "activity/closed" else {}
+
+    def reset_activity(self, state: str, event_id: str, *, reason: str) -> bool:
+        response = self._request(
+            {
+                "type": "activity/reset",
+                "event_id": event_id,
+                "state": state,
+                "reason": reason,
+            }
+        )
+        return response.get("type") == "activity/reset"
+
     def cancel(self, event_ids: list[str]) -> int:
         response = self._request(
             {"type": "speech/cancel", "event_ids": event_ids}
@@ -334,6 +378,46 @@ class RuntimePlaybackAdapter:
 
     def publish_activity(self, state: str, *, session_id: str | None, event_id: str) -> bool:
         return self._client(session_id).activity(state, event_id)
+
+    def open_activity(
+        self,
+        state: str,
+        *,
+        session_id: str | None,
+        event_id: str,
+        lifecycle_id: str,
+    ) -> bool:
+        return self._client(session_id).open_activity(state, event_id, lifecycle_id)
+
+    def close_activity(
+        self,
+        *,
+        session_id: str | None,
+        event_id: str,
+        lifecycle_id: str,
+        next_state: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        return self._client(session_id).close_activity(
+            lifecycle_id,
+            event_id,
+            next_state=next_state,
+            reason=reason,
+        )
+
+    def reset_activity(
+        self,
+        state: str,
+        *,
+        session_id: str | None,
+        event_id: str,
+        reason: str,
+    ) -> bool:
+        return self._client(session_id).reset_activity(
+            state,
+            event_id,
+            reason=reason,
+        )
 
     def cancel(self, session_id: str | None, event_ids: list[str]) -> int:
         return self._client(session_id).cancel(event_ids)
